@@ -69,6 +69,25 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "prepare_refund_confirmation",
+            "description": (
+                "用户明确要求申请退款时，准备待确认操作。"
+                "必须提供订单号及用户说明的原因；不提交退款申请、不执行退款。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "订单号，例如 ORD-2002。"},
+                    "reason": {"type": "string", "description": "用户提供的退款原因，不可编造。"},
+                },
+                "required": ["order_id", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 def get_policy(topic: str) -> dict:

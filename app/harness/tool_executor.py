@@ -2,20 +2,30 @@
 
 import json
 from datetime import datetime, timezone
+
 from app.business.tools import (
-    get_order, 
+    check_refund_eligibility,
+    get_order,
     get_policy,
-    check_refund_eligibility
 )
+from app.harness.confirmation import prepare_refund_confirmation
 
 
-def execute_tool(tool_call, user_id: str) -> dict:
+def execute_tool(
+    tool_call,
+    user_id: str,
+    *,
+    session_id: str | None = None,
+    thread_id: str | None = None,
+    now: datetime | None = None,
+) -> dict:
     name = tool_call.function.name
 
     if name not in {
         "get_order", 
         "get_policy", 
-        "check_refund_eligibility"
+        "check_refund_eligibility",
+        "prepare_refund_confirmation",
     }:
         return {"ok": False, "error": "UNKNOWN_TOOL"}
 
@@ -26,6 +36,23 @@ def execute_tool(tool_call, user_id: str) -> dict:
 
     if not isinstance(args, dict):
         return {"ok": False, "error": "INVALID_ARGUMENTS"}
+
+    if name == "prepare_refund_confirmation":
+        if set(args) != {"order_id", "reason"}:
+            return {"ok": False, "error": "INVALID_ARGUMENTS"}
+        if not all(isinstance(value, str) and value.strip() for value in args.values()):
+            return {"ok": False, "error": "INVALID_ARGUMENTS"}
+        if not all(isinstance(value, str) and value.strip() for value in (session_id, thread_id)):
+            return {"ok": False, "error": "MISSING_CONTEXT"}
+
+        return prepare_refund_confirmation(
+            user_id=user_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            order_id=args["order_id"],
+            reason=args["reason"],
+            now=now if now is not None else datetime.now(timezone.utc),
+        )
 
     
     if name in{"get_order", "check_refund_eligibility"}:
@@ -42,7 +69,7 @@ def execute_tool(tool_call, user_id: str) -> dict:
         return check_refund_eligibility(
             user_id=user_id,
             order_id=order_id,
-            now=datetime.now(timezone.utc)
+            now=now if now is not None else datetime.now(timezone.utc)
         )
 
     if name == "get_policy":
