@@ -852,7 +852,8 @@ curl -s http://localhost:8000/confirm \
 
 ## 15. 作者与联系
 
-- 作者：李政研
+- 作者：**0xbliss300**
+- GitHub 主页：[0xbliss300](https://github.com/0xbliss300)
 - 问题反馈与功能请求：提交 Issue
 - 版本与变更记录：见[版本历史](#13-版本历史)
 
