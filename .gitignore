@@ -1,0 +1,38 @@
+# Python 虚拟环境、编译文件和构建产物
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.vscode/
+
+# 检查工具缓存和覆盖率报告
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# 本地环境配置，保留配置示例
+.env
+.env.*
+!.env.example
+
+# 本地 SQLite 数据库及事务辅助文件
+/data/*.db
+/data/*.db-journal
+/data/*.db-wal
+/data/*.db-shm
+
+# 运行日志和评测产物
+*.log
+/data/traces.jsonl
+/reports/runs/
+
+# 不必要的md文件
+AGENTS.md
+TODO.md

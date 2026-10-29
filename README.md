@@ -592,11 +592,21 @@ python -m pip install -e ".[dev]"
 
 ### 9.3 配置
 
-复制示例文件并填写本地配置：
+`.env` 用来保存本机配置和 API Key，已被 `.gitignore` 忽略，因此克隆仓库后需要自行创建。当前仓库尚未提供 `.env.example`。
 
-```bash
-cp .env.example .env
+在项目根目录（与 `pyproject.toml` 同级）新建名为 `.env` 的文件，填写以下内容：
+
+```dotenv
+LLM_API_KEY=your-api-key
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
 ```
+
+将 `your-api-key` 替换为你自己的 API Key。如果使用其他 OpenAI 兼容服务，同时将 `LLM_BASE_URL` 和 `LLM_MODEL` 改为该服务提供的地址和模型名称。Windows 下注意文件名应为 `.env`，不要保存成 `.env.txt`。
+
+当前模型客户端通过 `python-dotenv` 加载项目根目录的 `.env`，读取上述三项配置；已存在的系统环境变量优先于 `.env` 中的同名值。调用真实模型前需要完成配置，否则可能因缺少变量或认证失败而报错。
+
+下面是项目规划的完整配置清单；除上述三项外，其余配置尚未接入当前代码，填写后暂不会生效：
 
 | 变量 | 示例 | 说明 |
 |---|---|---|
@@ -616,7 +626,13 @@ cp .env.example .env
 | `TRACE_ENABLED` | `true` | 是否启用 Trace |
 | `TRACE_PATH` | `./data/traces.jsonl` | Trace 输出 |
 
-`.env` 不提交 Git；`.env.example` 只放占位符。
+可以在项目根目录运行以下命令检查忽略规则：
+
+```bash
+git check-ignore -v .env
+```
+
+预期输出包含 `.gitignore` 中的 `.env` 规则，表示本地配置不会出现在普通的待提交列表中。不要使用 `git add -f .env` 强制提交密钥；后续提供 `.env.example` 时，其中只放配置名称和占位符。
 
 ### 9.4 初始化数据库
 
