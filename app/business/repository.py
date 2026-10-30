@@ -3,9 +3,18 @@ import sqlite3
 from app.storage.database import get_connection
 
 
-def get_order_for_user(*, user_id: str, order_id: str) -> dict | None:
+def get_order_for_user(
+    *, 
+    user_id: str, 
+    order_id: str,
+    conn: sqlite3.Connection | None = None,
+) -> dict | None:
     """按可信用户身份读取订单，不区分不存在和无权访问。"""
-    conn = get_connection()
+
+    owns_connection = conn is None
+
+    if conn is None:
+        conn = get_connection()
 
     try:
         row = conn.execute(
@@ -19,16 +28,20 @@ def get_order_for_user(*, user_id: str, order_id: str) -> dict | None:
         ).fetchone()
         return dict(row) if row is not None else None
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 
 def get_active_refund(
     *,
     user_id: str,
     order_id: str,
+    conn: sqlite3.Connection | None = None
 ) -> dict | None:
     """读取当前用户在该订单上处理中的售后退款申请。"""
-    conn = get_connection()
+    owns_connection = conn is None
+    if conn is None:
+        conn = get_connection()
 
     try:
         row = conn.execute(
@@ -47,7 +60,8 @@ def get_active_refund(
 
         return dict(row) if row is not None else None
     finally:
-        conn.close()
+        if owns_connection:
+            conn.close()
 
 def insert_pending_confirmation(
     conn: sqlite3.Connection,
@@ -163,5 +177,61 @@ def close_pending_confirmation(
         (status, confirmation_id, user_id, session_id, thread_id),
     )
 
+    if cursor.rowcount != 1:
+        raise RuntimeError("待确认操作状态发生变化")
+
+def insert_refund_request(
+    conn: sqlite3.Connection,
+    *,
+    record: dict,
+) -> None:
+    """在调用方事务中插入退款申请，不自行提交。"""
+    conn.execute(
+        """
+        INSERT INTO refund_requests (
+            refund_id, order_id, user_id, kind,
+            amount_cents, reason, status,
+            idempotency_key, confirmation_id,
+            created_at, updated_at
+        )
+        VALUES (
+            :refund_id, :order_id, :user_id, 'after_sales',
+            :amount_cents, :reason, 'pending',
+            :idempotency_key, :confirmation_id,
+            :created_at, :updated_at
+        )
+        """,
+        record,
+    )
+
+
+def consume_refund_confirmation(
+    conn: sqlite3.Connection,
+    *,
+    context: dict,
+    result_json: str,
+    timestamp: str,
+) -> None:
+    """记录批准和执行结果；只允许消费当前上下文的 pending。"""
+    cursor = conn.execute(
+        """
+        UPDATE confirmations
+        SET status = 'consumed',
+            approved_at = :timestamp,
+            consumed_at = :timestamp,
+            result_json = :result_json
+        WHERE confirmation_id = :confirmation_id
+          AND user_id = :user_id
+          AND session_id = :session_id
+          AND thread_id = :thread_id
+          AND tool = 'create_refund'
+          AND status = 'pending'
+        """,
+        {
+            **context,
+            "timestamp": timestamp,
+            "result_json": result_json,
+        },
+    )
     if cursor.rowcount != 1:
         raise RuntimeError("待确认操作状态发生变化")
