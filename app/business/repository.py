@@ -261,3 +261,22 @@ def get_latest_after_sales_refund(
         return dict(row) if row is not None else None
     finally:
         conn.close()
+
+def get_pending_refund_confirmations_for_user(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+) -> list[dict]:
+    """读取本人待确认的退款操作，由调用方处理过期。"""
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM confirmations
+        WHERE user_id = ?
+          AND tool = 'create_refund'
+          AND status = 'pending'
+        ORDER BY created_at DESC, rowid DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]

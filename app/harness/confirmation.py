@@ -11,6 +11,7 @@ from app.business.repository import (
     get_active_confirmation_for_context,
     get_confirmation_for_context,
     insert_pending_confirmation,
+    get_pending_refund_confirmations_for_user,
 )
 from app.business.service import check_refund_eligibility
 from app.storage.database import get_connection
@@ -38,6 +39,32 @@ def _expire_if_due(conn: sqlite3.Connection, record: dict | None, now: datetime)
     )
     return True
 
+def list_resumable_confirmations(
+    *,
+    user_id: str,
+    now: datetime,
+) -> list[dict]:
+    """列出本人未过期的待确认退款操作。"""
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise ValueError("user_id 不能为空")
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            records = get_pending_refund_confirmations_for_user(
+                conn,
+                user_id=user_id,
+            )
+            return [
+                record
+                for record in records
+                if not _expire_if_due(conn, record, now)
+            ]
+    finally:
+        conn.close()
 
 def load_active_confirmation(
     *, user_id: str, session_id: str, thread_id: str, now: datetime,
