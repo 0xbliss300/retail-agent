@@ -136,6 +136,7 @@ def init_db():
 
         migrate_refund_requests(conn)
         migrate_confirmations(conn)
+        migrate_chat_threads(conn)
 
         conn.executemany(
             """
@@ -159,6 +160,20 @@ def init_db():
     finally:
         conn.close()
 
-
+# 保存对话的表
+def migrate_chat_threads(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            user_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            messages_json TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, session_id, thread_id)
+        )
+    """)
 if __name__ == "__main__":
     init_db()
