@@ -8,6 +8,7 @@ build/
 dist/
 .pytest_cache/
 .vscode/
+.pytest-review-temp/
 
 # 检查工具缓存和覆盖率报告
 .ruff_cache/
