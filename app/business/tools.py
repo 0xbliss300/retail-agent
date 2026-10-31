@@ -88,6 +88,27 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_refund_status",
+            "description": (
+                "查询当前用户指定订单的最新售后退款申请及状态。"
+                "仅查询，不创建申请、不执行退款。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "订单号，例如 ORD-2002。",
+                    },
+                },
+                "required": ["order_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 def get_policy(topic: str) -> dict:
@@ -110,3 +131,9 @@ def check_refund_eligibility(
         now=now
     )
 
+# 用于agent调用获取状态
+def get_refund_status(user_id: str, order_id: str) -> dict:
+    return service.get_refund_status(
+        user_id=user_id,
+        order_id=order_id,
+    )

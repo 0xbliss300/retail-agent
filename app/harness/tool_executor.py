@@ -7,6 +7,7 @@ from app.business.tools import (
     check_refund_eligibility,
     get_order,
     get_policy,
+    get_refund_status,
 )
 from app.harness.confirmation import prepare_refund_confirmation
 
@@ -26,6 +27,7 @@ def execute_tool(
         "get_policy", 
         "check_refund_eligibility",
         "prepare_refund_confirmation",
+        "get_refund_status",
     }:
         return {"ok": False, "error": "UNKNOWN_TOOL"}
 
@@ -55,7 +57,11 @@ def execute_tool(
         )
 
     
-    if name in{"get_order", "check_refund_eligibility"}:
+    if name in{
+        "get_order", 
+        "check_refund_eligibility", 
+        "get_refund_status",
+    }:
         if set(args) != {"order_id"}:
             return {"ok": False, "error": "INVALID_ARGUMENTS"}
 
@@ -63,8 +69,15 @@ def execute_tool(
 
         if not isinstance(order_id, str) or not order_id.strip():
             return {"ok": False, "error": "INVALID_ARGUMENTS"}
+        
         if name == "get_order":
             return get_order(user_id=user_id, order_id=order_id)
+        
+        if name == "get_refund_status":
+            return get_refund_status(
+                user_id=user_id,
+                order_id=order_id,
+            )
 
         return check_refund_eligibility(
             user_id=user_id,

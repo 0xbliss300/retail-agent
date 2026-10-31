@@ -235,3 +235,29 @@ def consume_refund_confirmation(
     )
     if cursor.rowcount != 1:
         raise RuntimeError("待确认操作状态发生变化")
+
+
+def get_latest_after_sales_refund(
+    *,
+    user_id: str,
+    order_id: str,
+) -> dict | None:
+    """查询当前用户在该订单上的最新售后申请，包含已结束状态。"""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT refund_id, amount_cents, reason, status,
+                   created_at, updated_at
+            FROM refund_requests
+            WHERE user_id = ?
+              AND order_id = ?
+              AND kind = 'after_sales'
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (user_id, order_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()

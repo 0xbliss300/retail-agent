@@ -27,7 +27,7 @@ def main():
     print(f"[会话] {session_id}")
     print(f"[线程] {thread_id}")
 
-    print("订单助手已启动，可用自然语言拒绝待确认操作，输入 exit 退出。")
+    print("订单助手已启动，可确认或拒绝待确认退款操作，输入 exit 退出。")
 
     while True:
         question = input("\n你：").strip()

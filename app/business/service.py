@@ -13,6 +13,7 @@ from app.business.repository import (
     get_confirmation_for_context,
     get_order_for_user,
     insert_refund_request,
+    get_latest_after_sales_refund,
 )
 from app.storage.database import get_connection
 
@@ -225,3 +226,19 @@ def approve_refund_confirmation(
         return result
     finally:
         conn.close()
+
+def get_refund_status(*, user_id: str, order_id: str) -> dict:
+    """查询本人订单的最新售后申请；没有申请时返回 refund=None。"""
+    order = get_order_for_user(user_id=user_id, order_id=order_id)
+    if order is None:
+        return {"ok": False, "error": "ORDER_NOT_FOUND"}
+
+    refund = get_latest_after_sales_refund(
+        user_id=user_id,
+        order_id=order_id,
+    )
+    return {
+        "ok": True,
+        "order_id": order_id,
+        "refund": refund,
+    }
