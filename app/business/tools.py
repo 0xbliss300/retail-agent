@@ -1,10 +1,54 @@
 """模型可见的工具描述，以及到业务 Service 的薄适配。"""
 
-from app.business import service
 from datetime import datetime
+
+from app.business import service
 
 # 给模型看的工具说明；真正的数据库查询由下面的函数执行。
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_orders",
+            "description": (
+                "分页查询当前用户本人的订单列表，不需要用户提供订单号。"
+                "返回订单号、状态、实付金额及时间；has_more和next_offset指示下一页。"
+                "按订单号排序，仅查询，不修改订单。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer", "minimum": 1, "maximum": 50,
+                        "description": "每页条数，默认10，最多50。",
+                    },
+                    "offset": {
+                        "type": "integer", "minimum": 0, "maximum": 9223372036854775807,
+                        "description": "跳过的本人订单数，默认0；下一页使用next_offset。",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_logistics",
+            "description": (
+                "查询当前用户指定订单的本地模拟物流，包括承运商、运单号和按时间排序的轨迹。"
+                "仅查询，不修改订单、不发起退款；没有物流记录时返回logistics=null。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "订单号，例如ORD-2002。"},
+                },
+                "required": ["order_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -110,6 +154,14 @@ TOOLS = [
         },
     },
 ]
+
+def list_orders(user_id: str, *, limit: int = 10, offset: int = 0) -> dict:
+    return service.list_orders(user_id=user_id, limit=limit, offset=offset)
+
+
+def get_logistics(user_id: str, order_id: str) -> dict:
+    return service.get_logistics(user_id=user_id, order_id=order_id)
+
 
 def get_policy(topic: str) -> dict:
     return service.get_policy(topic=topic)

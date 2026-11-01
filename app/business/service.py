@@ -2,7 +2,7 @@
 import hashlib
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.business.policies import POLICIES, check_refund_window
@@ -11,9 +11,11 @@ from app.business.repository import (
     consume_refund_confirmation,
     get_active_refund,
     get_confirmation_for_context,
-    get_order_for_user,
-    insert_refund_request,
     get_latest_after_sales_refund,
+    get_logistics_for_user,
+    get_order_for_user,
+    get_orders_for_user,
+    insert_refund_request,
 )
 from app.storage.database import get_connection
 
@@ -25,6 +27,39 @@ def get_order(*, user_id: str, order_id: str) -> dict:
         return {"ok": False, "error": "ORDER_NOT_FOUND"}
 
     return {"ok": True, "order": order}
+
+
+def list_orders(*, user_id: str, limit: int = 10, offset: int = 0) -> dict:
+    """分页查询本人订单；多读一条判断是否还有下一页。"""
+    if not isinstance(user_id, str) or not user_id.strip():
+        return {"ok": False, "error": "MISSING_CONTEXT"}
+    if (
+        type(limit) is not int or not 1 <= limit <= 50
+        or type(offset) is not int or not 0 <= offset <= 2**63 - 1
+    ):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    rows = get_orders_for_user(user_id=user_id, limit=limit + 1, offset=offset)
+    has_more = len(rows) > limit
+    return {
+        "ok": True,
+        "orders": rows[:limit],
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + limit if has_more else None,
+    }
+
+
+def get_logistics(*, user_id: str, order_id: str) -> dict:
+    """订单归属通过后查询物流；暂无记录与订单不可访问分别处理。"""
+    order = get_order_for_user(user_id=user_id, order_id=order_id)
+    if order is None:
+        return {"ok": False, "error": "ORDER_NOT_FOUND"}
+    return {
+        "ok": True,
+        "order_id": order_id,
+        "logistics": get_logistics_for_user(user_id=user_id, order_id=order_id),
+    }
 
 
 def get_policy(*, topic: str) -> dict:
@@ -111,7 +146,7 @@ def approve_refund_confirmation(
 
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now 必须包含时区")
-    now = now.astimezone(timezone.utc)
+    now = now.astimezone(UTC)
 
     conn = get_connection()
     try:

@@ -1,5 +1,5 @@
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 # 获取当前项目的绝对地址
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +107,35 @@ def migrate_confirmations(conn: sqlite3.Connection) -> None:
         WHERE status IN ('pending', 'approved')
     """)
 
+def migrate_logistics(conn: sqlite3.Connection) -> None:
+    """增量增加物流表；已有订单及业务记录原样保留。"""
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_order_user
+        ON orders(order_id, user_id)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS shipments (
+            order_id TEXT PRIMARY KEY NOT NULL,
+            user_id TEXT NOT NULL,
+            carrier TEXT NOT NULL CHECK (length(trim(carrier)) > 0),
+            tracking_number TEXT NOT NULL CHECK (length(trim(tracking_number)) > 0),
+            UNIQUE (order_id, user_id),
+            FOREIGN KEY (order_id, user_id) REFERENCES orders(order_id, user_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS logistics_events (
+            event_id TEXT PRIMARY KEY NOT NULL,
+            order_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL CHECK (length(trim(occurred_at)) > 0),
+            description TEXT NOT NULL CHECK (length(trim(description)) > 0),
+            UNIQUE (order_id, occurred_at, description),
+            FOREIGN KEY (order_id, user_id) REFERENCES shipments(order_id, user_id)
+        )
+    """)
+
+
 def init_db():
     conn = get_connection()
     conn.execute("BEGIN")
@@ -137,6 +166,7 @@ def init_db():
         migrate_refund_requests(conn)
         migrate_confirmations(conn)
         migrate_chat_threads(conn)
+        migrate_logistics(conn)
 
         conn.executemany(
             """

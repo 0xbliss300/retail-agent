@@ -1,4 +1,4 @@
-"""加载本地开发使用的模拟订单和退款，不代表真实业务数据。"""
+"""加载本地开发使用的模拟订单、退款和物流，不代表真实业务数据。"""
 
 from app.storage.database import get_connection
 
@@ -50,6 +50,44 @@ def seed_orders() -> None:
                         "2026-10-30T02:00:00+00:00",
                         None,
                     ),
+                ],
+            )
+    finally:
+        conn.close()
+
+
+def seed_logistics() -> None:
+    """为模拟订单补充物流；已有物流与人工修改的轨迹不覆盖、不追加。"""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            # 同名订单若已属于其他用户，不为它附加当前用户的模拟物流。
+            order = conn.execute(
+                "SELECT 1 FROM orders WHERE order_id = ? AND user_id = ?",
+                ("ORD-2002", "USER-001"),
+            ).fetchone()
+            if order is None:
+                return
+            inserted = conn.execute(
+                """
+                INSERT INTO shipments (order_id, user_id, carrier, tracking_number)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(order_id) DO NOTHING
+                """,
+                ("ORD-2002", "USER-001", "模拟速递", "MOCK2002001"),
+            )
+            if inserted.rowcount == 0:
+                return
+            conn.executemany(
+                """
+                INSERT INTO logistics_events (event_id, order_id, user_id, occurred_at, description)
+                VALUES (?, 'ORD-2002', 'USER-001', ?, ?)
+                """,
+                [
+                    ("mock_2002_pickup", "2026-10-26T03:00:00+00:00", "模拟：快递已揽收"),
+                    ("mock_2002_transit", "2026-10-27T04:00:00+00:00", "模拟：到达分拨中心"),
+                    ("mock_2002_dispatch", "2026-10-28T02:00:00+00:00", "模拟：快递正在派送"),
                 ],
             )
     finally:

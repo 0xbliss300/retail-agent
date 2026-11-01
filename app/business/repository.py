@@ -1,5 +1,6 @@
 """业务数据访问；写操作使用调用方提供的事务连接。"""
 import sqlite3
+
 from app.storage.database import get_connection
 
 
@@ -30,6 +31,56 @@ def get_order_for_user(
     finally:
         if owns_connection:
             conn.close()
+
+
+def get_orders_for_user(*, user_id: str, limit: int, offset: int) -> list[dict]:
+    """先按可信用户过滤，再按订单号稳定排序分页；不返回内部身份字段。"""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT order_id, status, paid_amount_cents, paid_at, shipped_at, delivered_at
+            FROM orders
+            WHERE user_id = ?
+            ORDER BY order_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (user_id, limit, offset),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_logistics_for_user(*, user_id: str, order_id: str) -> dict | None:
+    """在同一读取快照中查询本人物流与轨迹，不返回身份或内部事件编号。"""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN")
+            row = conn.execute(
+                """
+                SELECT s.carrier, s.tracking_number
+                FROM shipments AS s
+                JOIN orders AS o ON o.order_id = s.order_id AND o.user_id = s.user_id
+                WHERE s.order_id = ? AND s.user_id = ?
+                """,
+                (order_id, user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            events = conn.execute(
+                """
+                SELECT occurred_at, description
+                FROM logistics_events
+                WHERE order_id = ? AND user_id = ?
+                ORDER BY occurred_at ASC, event_id ASC
+                """,
+                (order_id, user_id),
+            ).fetchall()
+            return {**dict(row), "events": [dict(event) for event in events]}
+    finally:
+        conn.close()
 
 
 def get_active_refund(

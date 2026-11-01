@@ -1,13 +1,15 @@
 """将模型提出的工具调用转换为经过检查的本地函数调用。"""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.business.tools import (
     check_refund_eligibility,
+    get_logistics,
     get_order,
     get_policy,
     get_refund_status,
+    list_orders,
 )
 from app.harness.confirmation import prepare_refund_confirmation
 
@@ -23,6 +25,8 @@ def execute_tool(
     name = tool_call.function.name
 
     if name not in {
+        "list_orders",
+        "get_logistics",
         "get_order", 
         "get_policy", 
         "check_refund_eligibility",
@@ -39,6 +43,16 @@ def execute_tool(
     if not isinstance(args, dict):
         return {"ok": False, "error": "INVALID_ARGUMENTS"}
 
+    if name == "list_orders":
+        if set(args) - {"limit", "offset"}:
+            return {"ok": False, "error": "INVALID_ARGUMENTS"}
+        # 分页边界由 Service 统一检查，直接调用服务也不能绕过。
+        return list_orders(
+            user_id=user_id,
+            limit=args.get("limit", 10),
+            offset=args.get("offset", 0),
+        )
+
     if name == "prepare_refund_confirmation":
         if set(args) != {"order_id", "reason"}:
             return {"ok": False, "error": "INVALID_ARGUMENTS"}
@@ -53,11 +67,12 @@ def execute_tool(
             thread_id=thread_id,
             order_id=args["order_id"],
             reason=args["reason"],
-            now=now if now is not None else datetime.now(timezone.utc),
+            now=now if now is not None else datetime.now(UTC),
         )
 
     
     if name in{
+        "get_logistics",
         "get_order", 
         "check_refund_eligibility", 
         "get_refund_status",
@@ -72,6 +87,9 @@ def execute_tool(
         
         if name == "get_order":
             return get_order(user_id=user_id, order_id=order_id)
+
+        if name == "get_logistics":
+            return get_logistics(user_id=user_id, order_id=order_id)
         
         if name == "get_refund_status":
             return get_refund_status(
@@ -82,7 +100,7 @@ def execute_tool(
         return check_refund_eligibility(
             user_id=user_id,
             order_id=order_id,
-            now=now if now is not None else datetime.now(timezone.utc)
+            now=now if now is not None else datetime.now(UTC)
         )
 
     if name == "get_policy":
