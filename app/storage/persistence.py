@@ -1,17 +1,26 @@
 """保存完整轮次的对话快照，不执行业务操作。"""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.storage.database import get_connection
+
+CONVERSATION_TTL = timedelta(minutes=10)
+
+
+def _is_resumable(updated_at: str, now: datetime) -> bool:
+    """聊天恢复期限独立于业务操作的确认有效期。"""
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+    return now < datetime.fromisoformat(updated_at) + CONVERSATION_TTL
 
 
 class ConversationConflict(RuntimeError):
     """对话已被其他保存操作更新，或预期的对话不存在。"""
 
 
-def list_conversations(*, user_id: str) -> list[dict]:
-    """按最近更新时间列出本人对话摘要，不读取完整消息。"""
+def list_conversations(*, user_id: str, now: datetime) -> list[dict]:
+    """按最近更新时间列出本人未过期的对话摘要，不读取完整消息。"""
     if not isinstance(user_id, str) or not user_id.strip():
         raise ValueError("user_id 不能为空")
     conn = get_connection()
@@ -25,7 +34,7 @@ def list_conversations(*, user_id: str) -> list[dict]:
             """,
             (user_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows if _is_resumable(row["updated_at"], now)]
     finally:
         conn.close()
 
@@ -142,8 +151,9 @@ def load_conversation(
     user_id: str,
     session_id: str,
     thread_id: str,
+    now: datetime | None = None,
 ) -> dict | None:
-    """按完整身份上下文读取快照；无匹配记录返回None。"""
+    """按身份读取快照；恢复时传 now 排除过期记录，省略时可检查原始存档。"""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -157,6 +167,8 @@ def load_conversation(
             (user_id, session_id, thread_id),
         ).fetchone()
         if row is None:
+            return None
+        if now is not None and not _is_resumable(row["updated_at"], now):
             return None
 
         result = dict(row)

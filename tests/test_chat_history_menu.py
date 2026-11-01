@@ -81,12 +81,55 @@ def test_list_conversations_is_scoped_sorted_and_contains_no_message_bodies(hist
     save_history(now + timedelta(minutes=1), session="newer", thread="newer", title="较新的问题")
     save_history(now, owner="OTHER", session="private", thread="private", title="私人问题")
 
-    records = persistence.list_conversations(user_id="USER-001")
+    records = persistence.list_conversations(user_id="USER-001", now=now + timedelta(minutes=1))
 
     assert [row["title"] for row in records] == ["较新的问题", "较早的问题"]
     assert records[0]["session_id"] == "newer"
     assert records[0]["thread_id"] == "newer"
     assert all("messages" not in row and "messages_json" not in row for row in records)
+
+
+@pytest.mark.parametrize("age_seconds", [599, 600, 601])
+def test_menu_hides_expired_history_without_deleting_it(
+    history_db, monkeypatch, capsys, age_seconds,
+):
+    context = save_history(history_db["now"], title="旧的订单问题")
+    before = persistence.load_conversation(**context)
+    history_db["now"] += timedelta(seconds=age_seconds)
+    save_history(history_db["now"], session="fresh", thread="fresh", title="当前的问题")
+    inputs(monkeypatch, ["0", "exit"])
+    no_model(monkeypatch)
+
+    demo_chat.main([])
+
+    output = capsys.readouterr().out
+    assert "当前的问题" in output
+    assert ("旧的订单问题" in output) == (age_seconds < 600)
+    assert persistence.load_conversation(**context) == before
+
+
+@pytest.mark.parametrize("use_resume_args", [False, True])
+def test_expired_history_cannot_be_restored(history_db, monkeypatch, capsys, use_resume_args):
+    context = save_history(history_db["now"])
+    before = persistence.load_conversation(**context)
+
+    def choose(prompt):
+        history_db["now"] += timedelta(minutes=10)
+        return "1"
+
+    monkeypatch.setattr("builtins.input", choose)
+    no_model(monkeypatch)
+    args = []
+    if use_resume_args:
+        history_db["now"] += timedelta(minutes=10)
+        args = ["--resume-session", context["session_id"], "--resume-thread", context["thread_id"]]
+
+    demo_chat.main(args)
+
+    output = capsys.readouterr().out
+    assert "已过期" in output
+    assert "已加载之前保存的对话消息" not in output
+    assert persistence.load_conversation(**context) == before
 
 
 def test_history_only_conversation_restores_context_and_saves_next_version(history_db, monkeypatch, capsys):
@@ -205,16 +248,16 @@ def test_history_survives_expired_confirmation_without_executing_it(
     history_db, monkeypatch, capsys, expire_during_selection,
 ):
     context = save_history(history_db["now"])
-    confirmation_id = create_pending(context, history_db["now"])
+    confirmation_id = create_pending(context, history_db["now"] - timedelta(minutes=1))
     before = persistence.load_conversation(**context)
     if not expire_during_selection:
-        history_db["now"] += timedelta(minutes=10)
+        history_db["now"] += timedelta(minutes=9)
     choices = iter(["1", "exit"])
 
     def choose(prompt):
         value = next(choices)
         if value == "1" and expire_during_selection:
-            history_db["now"] += timedelta(minutes=10)
+            history_db["now"] += timedelta(minutes=9)
         return value
 
     monkeypatch.setattr("builtins.input", choose)

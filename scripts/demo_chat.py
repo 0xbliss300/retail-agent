@@ -28,13 +28,14 @@ from app.storage.persistence import (
 
 def choose_conversation(user_id: str) -> dict | None:
     """合并本人历史与待确认操作；菜单选择不调用模型或执行业务。"""
+    now = datetime.now(UTC)
     pending = list_resumable_confirmations(
         user_id=user_id,
-        now=datetime.now(UTC),
+        now=now,
     )
     histories = {
         (row["session_id"], row["thread_id"]): row
-        for row in list_conversations(user_id=user_id)
+        for row in list_conversations(user_id=user_id, now=now)
     }
     records = []
     # 待确认操作优先展示；同一上下文的历史合并到同一个菜单项。
@@ -122,7 +123,7 @@ def main(argv: list[str] | None = None):
         "thread_id": thread_id,
     }
     try:
-        snapshot = load_conversation(**context)
+        snapshot = load_conversation(**context, now=datetime.now(UTC))
     except (sqlite3.Error, ValueError, TypeError):
         print("无法读取已保存的对话，原记录已保留。请检查数据后重试。")
         return
@@ -136,7 +137,7 @@ def main(argv: list[str] | None = None):
             now=datetime.now(UTC),
         )
         if active is None and snapshot is None:
-            print("所选操作不存在、已结束或已过期，未执行退款申请。")
+            print("所选对话或操作不存在、已结束或已过期，请重新启动并开始新对话。")
             return
         if active is not None and active["status"] != "pending":
             print("该操作不处于待确认状态，当前入口无法恢复。")
