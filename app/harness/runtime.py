@@ -1,14 +1,15 @@
 """会话消息与模型、工具之间的执行循环。"""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.agent.confirmation_intent import classify_confirmation_intent
-from app.business.service import approve_refund_confirmation
 from app.agent.model_client import request_model
+from app.business.service import approve_cancel_confirmation, approve_refund_confirmation
 from app.business.tools import TOOLS
 from app.harness.confirmation import load_active_confirmation, reject_confirmation
 from app.harness.tool_executor import execute_tool
+
 
 def create_messages(system_prompt: str) -> list:
     """每段新对话创建独立的消息列表。"""
@@ -16,6 +17,12 @@ def create_messages(system_prompt: str) -> list:
 
 
 def _confirmation_answer(record: dict) -> str:
+    if record.get("tool") == "cancel_order":
+        return (
+            f"{record['summary']}\n确认编号：{record['confirmation_id']}\n"
+            f"有效期至：{record['expires_at']}\n"
+            "本次取消尚未执行。你可以说“确认取消”，或“算了，不取消了”。"
+        )
     return (
         f"{record['summary']}\n"
         f"确认编号：{record['confirmation_id']}\n"
@@ -34,6 +41,9 @@ def _handle_pending_confirmation(
 ) -> str:
     if active["status"] == "approved":
         return "当前线程有已批准且尚未结束的操作，请先处理该操作。"
+    is_cancel = active["tool"] == "cancel_order"
+    if active["tool"] not in {"cancel_order", "create_refund"}:
+        return "无法识别当前待确认操作，本次未执行。"
 
     intent = classify_confirmation_intent(
         client,
@@ -55,14 +65,26 @@ def _handle_pending_confirmation(
     }
 
     # 模型识别可能耗时，实际执行时重新取时间。
-    decision_time = now if now is not None else datetime.now(timezone.utc)
+    decision_time = now if now is not None else datetime.now(UTC)
 
     if intent == "reject":
         result = reject_confirmation(**context, now=decision_time)
         if result.get("status") == "rejected":
-            return "已拒绝当前操作，未创建退款申请。"
+            return "已拒绝本次取消请求，本次未修改订单。" if is_cancel else "已拒绝当前操作，未创建退款申请。"
     else:
-        result = approve_refund_confirmation(**context, now=decision_time)
+        approve = approve_cancel_confirmation if is_cancel else approve_refund_confirmation
+        result = approve(**context, now=decision_time)
+        if is_cancel and result.get("ok") and result.get("status") == "canceled":
+            answer = f"订单 {result['order_id']} 已取消（canceled）。"
+            refund = result["refund"]
+            if refund is None:
+                return answer + "未付款订单无需退款，未生成退款流水。"
+            amount = refund["amount_cents"]
+            return (
+                answer + f"\n模拟取消退款流水：{refund['refund_id']}\n"
+                f"金额：{amount // 100}.{amount % 100:02d}元，流水状态：completed。"
+                "这是本地模拟结果，未发生真实资金划转。"
+            )
         if result.get("ok") and result.get("status") == "submitted":
             amount = result["amount_cents"]
             return (
@@ -74,14 +96,23 @@ def _handle_pending_confirmation(
 
     error = result.get("error", "INTERNAL_ERROR")
     if error == "CONFIRMATION_EXPIRED":
+        if is_cancel:
+            return "当前取消操作已过期，本次未修改订单。请重新发起取消。"
         return "当前操作已过期，未创建退款申请。请重新发起申请。"
     if error == "CONFIRMATION_STALE":
+        if is_cancel:
+            return (
+                "订单状态或付款信息已变化，本次未执行取消（CONFIRMATION_STALE）。"
+                "请先拒绝当前操作，再重新发起取消以核对新摘要。"
+            )
         return (
             "订单金额已变化，未提交退款申请（CONFIRMATION_STALE）。"
             "请先拒绝当前操作，再重新发起申请以核对新金额。"
         )
 
     reason = result.get("reason", "当前操作无法执行。")
+    if is_cancel:
+        return f"本次未执行取消（{error}）：{reason}"
     return f"未创建新的退款申请（{error}）：{reason}"
 
 def run_agent(
@@ -101,7 +132,7 @@ def run_agent(
 
     messages.append({"role": "user", "content": user_message})
 
-    current_time = now if now is not None else datetime.now(timezone.utc)
+    current_time = now if now is not None else datetime.now(UTC)
     has_context = all(
         isinstance(value, str) and value.strip()
         for value in (user_id, session_id, thread_id)

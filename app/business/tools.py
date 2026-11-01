@@ -9,6 +9,26 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "cancel_order",
+            "description": (
+                "用户明确要求取消本人订单时，提供订单号和用户说明的取消原因，准备待确认取消操作。"
+                "未付款可取消；已付款须付款不超过24小时且未发货。"
+                "本次调用仅保存摘要，用户另行明确确认后由运行时执行；不得声称订单已取消。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "string", "description": "用户要取消的订单号。"},
+                    "reason": {"type": "string", "description": "用户提供的取消原因，不可编造。"},
+                },
+                "required": ["order_id", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_orders",
             "description": (
                 "分页查询当前用户本人的订单列表，不需要用户提供订单号。"

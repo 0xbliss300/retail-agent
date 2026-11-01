@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from app.agent.model_client import create_client
 from app.agent.prompts import (
+    CANCELLATION_PROMPT,
     ORDER_PROMPT,
     POLICY_PROMPT,
     REFUND_PROMPT,
@@ -53,7 +54,9 @@ def choose_conversation(user_id: str) -> dict | None:
     print("选择要继续的对话：")
     for number, record in enumerate(records, start=1):
         operation = record["pending"]
-        marker = " [待确认退款]" if operation is not None else ""
+        marker = ""
+        if operation is not None:
+            marker = " [待确认取消]" if operation["tool"] == "cancel_order" else " [待确认退款]"
         print(f"{number}. {record['title']}{marker}")
         if operation is not None:
             if record["title"] != operation["summary"]:
@@ -139,12 +142,13 @@ def main(argv: list[str] | None = None):
             print("该操作不处于待确认状态，当前入口无法恢复。")
             return
         if active is None and selected is not None and selected["pending"] is not None:
-            print("待确认操作已结束或已过期；仅恢复聊天历史，不执行退款申请。")
+            print("待确认操作已结束或已过期；仅恢复聊天历史，本次不执行待确认操作。")
 
     system_prompt = build_system_prompt(
         ORDER_PROMPT,
         POLICY_PROMPT,
         REFUND_PROMPT,
+        CANCELLATION_PROMPT,
     )
     version = snapshot["version"] if snapshot is not None else 0
 
@@ -154,14 +158,15 @@ def main(argv: list[str] | None = None):
         messages.extend(snapshot["messages"][1:])
         print("已加载之前保存的对话消息。")
     if active is not None:
-        print("已恢复待确认的退款操作。")
+        is_cancel = active["tool"] == "cancel_order"
+        print("已恢复待确认的取消操作。" if is_cancel else "已恢复待确认的退款操作。")
         print(f"确认编号：{active['confirmation_id']}")
         print(active["summary"])
         print(f"有效期至：{active['expires_at']}")
-        print("你可以确认提交，或拒绝本次申请。")
+        print("你可以确认取消，或拒绝本次操作。" if is_cancel else "你可以确认提交，或拒绝本次申请。")
 
     client = create_client()
-    print("订单助手已启动，可确认或拒绝待确认退款操作，输入 exit 退出。")
+    print("订单助手已启动，可确认或拒绝待确认操作，输入 exit 退出。")
 
     while True:
         try:
@@ -204,7 +209,7 @@ def main(argv: list[str] | None = None):
             print(
                 "本轮历史未保存，当前聊天已停止。"
                 "请保留上方业务结果，并通过查询核对申请状态。"
-                "请勿因历史保存失败而重复提交申请。"
+                "请勿因历史保存失败而重复发起业务操作。"
             )
             break
 

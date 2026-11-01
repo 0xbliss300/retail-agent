@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.business import cancellation
 from app.business.policies import POLICIES, check_refund_window
 from app.business.repository import (
     close_pending_confirmation,
@@ -18,6 +19,20 @@ from app.business.repository import (
     insert_refund_request,
 )
 from app.storage.database import get_connection
+
+
+def check_cancel_eligibility(
+    *, user_id: str, order_id: str, now: datetime, conn: sqlite3.Connection | None = None,
+) -> dict:
+    return cancellation.check_cancel_eligibility(user_id=user_id, order_id=order_id, now=now, conn=conn)
+
+
+def approve_cancel_confirmation(
+    *, user_id: str, session_id: str, thread_id: str, confirmation_id: str, now: datetime,
+) -> dict:
+    return cancellation.approve_cancel_confirmation(
+        user_id=user_id, session_id=session_id, thread_id=thread_id, confirmation_id=confirmation_id, now=now,
+    )
 
 
 def get_order(*, user_id: str, order_id: str) -> dict:

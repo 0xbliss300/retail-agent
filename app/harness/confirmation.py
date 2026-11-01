@@ -1,21 +1,20 @@
-"""准备、拒绝待确认操作并处理过期；不批准确认、不创建退款申请。"""
+"""准备退款或取消确认，处理拒绝和过期；业务执行由 Service 负责。"""
 
 import hashlib
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from app.business.repository import (
     close_pending_confirmation,
     get_active_confirmation_for_context,
     get_confirmation_for_context,
+    get_pending_confirmations_for_user,
     insert_pending_confirmation,
-    get_pending_refund_confirmations_for_user,
 )
-from app.business.service import check_refund_eligibility
+from app.business.service import check_cancel_eligibility, check_refund_eligibility
 from app.storage.database import get_connection
-
 
 CONFIRMATION_TTL = timedelta(minutes=10)
 
@@ -44,7 +43,7 @@ def list_resumable_confirmations(
     user_id: str,
     now: datetime,
 ) -> list[dict]:
-    """列出本人未过期的待确认退款操作。"""
+    """列出本人未过期的退款或取消操作。"""
     if not isinstance(user_id, str) or not user_id.strip():
         raise ValueError("user_id 不能为空")
     if now.tzinfo is None or now.utcoffset() is None:
@@ -54,7 +53,7 @@ def list_resumable_confirmations(
     try:
         with conn:
             conn.execute("BEGIN IMMEDIATE")
-            records = get_pending_refund_confirmations_for_user(
+            records = get_pending_confirmations_for_user(
                 conn,
                 user_id=user_id,
             )
@@ -104,7 +103,7 @@ def prepare_refund_confirmation(
         raise ValueError("now 必须包含时区")
 
     # 获取现在的时间
-    now = now.astimezone(timezone.utc)
+    now = now.astimezone(UTC)
     order_id = order_id.strip()
     reason = reason.strip()
 
@@ -191,6 +190,62 @@ def prepare_refund_confirmation(
         "expires_at": expires_at,
     }
 
+def prepare_cancel_confirmation(
+    *, user_id: str, session_id: str, thread_id: str, order_id: str, reason: str, now: datetime,
+) -> dict:
+    """保存取消摘要，不更新订单；批准时必须再次校验业务数据。"""
+    if not all(isinstance(v, str) and v.strip() for v in (user_id, session_id, thread_id, order_id, reason)):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+    now = now.astimezone(UTC)
+    order_id, reason = order_id.strip(), reason.strip()
+    eligibility = check_cancel_eligibility(user_id=user_id, order_id=order_id, now=now)
+    if not eligibility["ok"]:
+        return eligibility
+    if not eligibility["eligible"]:
+        return {
+            "ok": False, "error": "POLICY_DENIED",
+            "policy_code": eligibility["policy_code"], "reason": eligibility["reason"],
+        }
+    params = {
+        "order_id": order_id, "reason": reason, "order_status": eligibility["order_status"],
+        "amount_cents": eligibility["amount_cents"], "paid_at": eligibility["paid_at"],
+    }
+    raw = json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    amount = params["amount_cents"]
+    consequence = (
+        "未付款订单无需退款，不生成退款流水。" if params["order_status"] == "unpaid" else
+        f"将生成{amount // 100}.{amount % 100:02d}元的模拟取消退款流水，不发生真实资金划转。"
+    )
+    summary = f"取消订单 {order_id}，原因：{reason}。执行后订单变为canceled。{consequence}"
+    confirmation_id = f"cfm_{uuid4().hex}"
+    expires_at = (now + CONFIRMATION_TTL).isoformat()
+    record = {
+        "confirmation_id": confirmation_id, "user_id": user_id, "session_id": session_id,
+        "thread_id": thread_id, "tool": "cancel_order", "order_id": order_id, "params_json": raw,
+        "params_fingerprint": hashlib.sha256(raw.encode("utf-8")).hexdigest(), "summary": summary,
+        "status": "pending", "idempotency_key": f"confirm:{confirmation_id}",
+        "created_at": now.isoformat(), "expires_at": expires_at,
+    }
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active = get_active_confirmation_for_context(
+                conn, user_id=user_id, session_id=session_id, thread_id=thread_id,
+            )
+            _expire_if_due(conn, active, now)
+            if not insert_pending_confirmation(conn, record=record):
+                return {"ok": False, "error": "PENDING_ACTION_EXISTS"}
+    finally:
+        conn.close()
+    return {
+        "ok": True, "status": "awaiting_confirmation", "tool": "cancel_order",
+        "confirmation_id": confirmation_id, "summary": summary, "expires_at": expires_at,
+    }
+
+
 # 拒绝待确认操作
 def reject_confirmation(
     *,
@@ -208,7 +263,7 @@ def reject_confirmation(
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now 必须包含时区")
 
-    now = now.astimezone(timezone.utc)
+    now = now.astimezone(UTC)
     context = {
         "confirmation_id": confirmation_id,
         "user_id": user_id,

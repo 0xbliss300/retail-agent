@@ -1,7 +1,7 @@
 """CLI 自动保存完整轮次；历史保存失败不重做业务操作。"""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from openai.types.chat import ChatCompletionMessage
@@ -152,7 +152,7 @@ def test_database_save_failure_reports_answer_without_retrying(chat_db, monkeypa
 
 
 def test_refund_commit_survives_history_save_failure(chat_db, monkeypatch, capsys):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     conn = database.get_connection()
     try:
         with conn:
@@ -205,7 +205,7 @@ def test_refund_commit_survives_history_save_failure(chat_db, monkeypatch, capsy
 
 
 def test_pending_resume_loads_existing_history_with_current_system_prompt(chat_db, monkeypatch):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     conn = database.get_connection()
     try:
         with conn:
@@ -250,5 +250,6 @@ def test_pending_resume_loads_existing_history_with_current_system_prompt(chat_d
     assert loaded["messages"][1:3] == original[1:]
     assert loaded["messages"][0]["content"] == demo_chat.build_system_prompt(
         demo_chat.ORDER_PROMPT, demo_chat.POLICY_PROMPT, demo_chat.REFUND_PROMPT,
+        demo_chat.CANCELLATION_PROMPT,
     )
     assert loaded["messages"][-2] == {"role": "user", "content": "先等等"}

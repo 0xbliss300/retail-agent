@@ -1,5 +1,7 @@
 """加载本地开发使用的模拟订单、退款和物流，不代表真实业务数据。"""
 
+from datetime import UTC, datetime, timedelta
+
 from app.storage.database import get_connection
 
 
@@ -51,6 +53,27 @@ def seed_orders() -> None:
                         None,
                     ),
                 ],
+            )
+    finally:
+        conn.close()
+
+
+def seed_cancellation_orders(*, now: datetime | None = None) -> None:
+    """新增取消演示订单；已有订单状态和付款时间不重置。"""
+    reference = now if now is not None else datetime.now(UTC)
+    if reference.tzinfo is None or reference.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+    paid_at = (reference.astimezone(UTC) - timedelta(hours=1)).isoformat()
+    conn = get_connection()
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO orders (order_id, user_id, status, paid_amount_cents, paid_at)
+                VALUES (?, 'USER-001', ?, ?, ?)
+                ON CONFLICT(order_id) DO NOTHING
+                """,
+                [("ORD-3001", "unpaid", 0, None), ("ORD-3002", "paid", 19900, paid_at)],
             )
     finally:
         conn.close()

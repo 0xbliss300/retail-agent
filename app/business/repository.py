@@ -313,21 +313,99 @@ def get_latest_after_sales_refund(
     finally:
         conn.close()
 
-def get_pending_refund_confirmations_for_user(
+def get_pending_confirmations_for_user(
     conn: sqlite3.Connection,
     *,
     user_id: str,
 ) -> list[dict]:
-    """读取本人待确认的退款操作，由调用方处理过期。"""
+    """读取本人待确认的退款或取消操作，由调用方处理过期。"""
     rows = conn.execute(
         """
         SELECT *
         FROM confirmations
         WHERE user_id = ?
-          AND tool = 'create_refund'
+          AND tool IN ('create_refund', 'cancel_order')
           AND status = 'pending'
         ORDER BY created_at DESC, rowid DESC
         """,
         (user_id,),
     ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_cancel_log_for_order(conn: sqlite3.Connection, *, user_id: str, order_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM operation_logs WHERE user_id=? AND order_id=? AND operation='cancel_order'",
+        (user_id, order_id),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def get_blocking_refund_for_cancel(conn: sqlite3.Connection, *, user_id: str, order_id: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT refund_id FROM refund_requests
+        WHERE user_id=? AND order_id=?
+          AND (kind='cancellation' OR status IN ('pending','approved','completed'))
+        LIMIT 1
+        """,
+        (user_id, order_id),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def cancel_order_in_transaction(
+    conn: sqlite3.Connection, *, user_id: str, order_id: str, expected_status: str,
+) -> None:
+    cursor = conn.execute(
+        "UPDATE orders SET status='canceled' WHERE user_id=? AND order_id=? AND status=?",
+        (user_id, order_id, expected_status),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("取消时订单状态发生变化")
+
+
+def insert_cancellation_refund(conn: sqlite3.Connection, *, record: dict) -> None:
+    """与订单、日志和确认结果使用同一事务；不调用真实支付系统。"""
+    conn.execute(
+        """
+        INSERT INTO refund_requests (
+            refund_id, order_id, user_id, kind, amount_cents, reason, status,
+            idempotency_key, confirmation_id, created_at, updated_at
+        ) VALUES (
+            :refund_id, :order_id, :user_id, 'cancellation', :amount_cents, :reason, 'completed',
+            :idempotency_key, :confirmation_id, :timestamp, :timestamp
+        )
+        """, record,
+    )
+
+
+def insert_cancel_operation_log(conn: sqlite3.Connection, *, record: dict) -> None:
+    conn.execute(
+        """
+        INSERT INTO operation_logs (
+            log_id,user_id,order_id,confirmation_id,operation,previous_status,new_status,
+            amount_cents,reason,params_fingerprint,idempotency_key,created_at
+        ) VALUES (
+            :log_id,:user_id,:order_id,:confirmation_id,'cancel_order',:previous_status,'canceled',
+            :amount_cents,:reason,:params_fingerprint,:idempotency_key,:timestamp
+        )
+        """, record,
+    )
+
+
+def consume_cancel_confirmation(
+    conn: sqlite3.Connection, *, context: dict, result_json: str, timestamp: str,
+) -> None:
+    cursor = conn.execute(
+        """
+        UPDATE confirmations
+        SET status='consumed',approved_at=:timestamp,consumed_at=:timestamp,result_json=:result_json
+        WHERE confirmation_id=:confirmation_id AND user_id=:user_id
+          AND session_id=:session_id AND thread_id=:thread_id
+          AND tool='cancel_order' AND status='pending'
+        """,
+        {**context, "result_json": result_json, "timestamp": timestamp},
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("待确认取消操作状态发生变化")

@@ -82,7 +82,7 @@ conda run -n retail-agent python -m pytest tests/test_logistics.py
 conda run -n retail-agent python -m pytest
 ```
 
-物流测试共 24 个，全量测试为 121 passed, 4 subtests passed。
+物流测试共 24 个，接入时全量测试为 121 passed, 4 subtests passed；后续功能会增加全量用例数。
 测试仅替换联网模型响应，迁移、Service、Repository、工具执行与 SQLite 均真实执行。
 离线测试证明执行链路，不代表真实模型已通过所有物流意图和回答质量验收。
 

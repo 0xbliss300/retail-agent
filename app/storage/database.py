@@ -136,6 +136,45 @@ def migrate_logistics(conn: sqlite3.Connection) -> None:
     """)
 
 
+def migrate_cancellation(conn: sqlite3.Connection) -> None:
+    """增加取消业务约束和只追加日志；旧数据冲突时失败回滚，不删除历史。"""
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_refunds_cancellation_order
+        ON refund_requests(order_id) WHERE kind = 'cancellation'
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_confirmations_id_user_order
+        ON confirmations(confirmation_id, user_id, order_id)
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS operation_logs (
+            log_id TEXT PRIMARY KEY NOT NULL,
+            user_id TEXT NOT NULL,
+            order_id TEXT NOT NULL,
+            confirmation_id TEXT NOT NULL UNIQUE,
+            operation TEXT NOT NULL CHECK (operation = 'cancel_order'),
+            previous_status TEXT NOT NULL CHECK (previous_status IN ('unpaid', 'paid')),
+            new_status TEXT NOT NULL CHECK (new_status = 'canceled'),
+            amount_cents INTEGER NOT NULL CHECK (typeof(amount_cents) = 'integer' AND amount_cents >= 0),
+            reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+            params_fingerprint TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (order_id, operation),
+            UNIQUE (user_id, idempotency_key),
+            FOREIGN KEY (order_id, user_id) REFERENCES orders(order_id, user_id),
+            FOREIGN KEY (confirmation_id, user_id, order_id)
+                REFERENCES confirmations(confirmation_id, user_id, order_id)
+        )
+    """)
+    for action in ("UPDATE", "DELETE"):
+        conn.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS operation_logs_no_{action.lower()}
+            BEFORE {action} ON operation_logs
+            BEGIN SELECT RAISE(ABORT, 'operation_logs is append-only'); END
+        """)
+
+
 def init_db():
     conn = get_connection()
     conn.execute("BEGIN")
@@ -167,6 +206,7 @@ def init_db():
         migrate_confirmations(conn)
         migrate_chat_threads(conn)
         migrate_logistics(conn)
+        migrate_cancellation(conn)
 
         conn.executemany(
             """

@@ -96,6 +96,6 @@ conda run -n retail-agent python -m pytest tests/test_my_orders.py
 conda run -n retail-agent python -m pytest
 ```
 
-本轮新增32个测试，全量结果为153 passed, 4 subtests passed。
+本人订单查询接入时新增32个测试，当时全量结果为153 passed, 4 subtests passed；后续功能会增加全量用例数。
 自动化仅替换联网模型响应，工具执行、Service、Repository和SQLite真实运行。
 工具查询不写数据库；聊天入口保存对话历史是已有行为，测试单独核对业务数据不变。

@@ -11,7 +11,7 @@ from app.business.tools import (
     get_refund_status,
     list_orders,
 )
-from app.harness.confirmation import prepare_refund_confirmation
+from app.harness.confirmation import prepare_cancel_confirmation, prepare_refund_confirmation
 
 
 def execute_tool(
@@ -25,6 +25,7 @@ def execute_tool(
     name = tool_call.function.name
 
     if name not in {
+        "cancel_order",
         "list_orders",
         "get_logistics",
         "get_order", 
@@ -53,7 +54,7 @@ def execute_tool(
             offset=args.get("offset", 0),
         )
 
-    if name == "prepare_refund_confirmation":
+    if name in {"prepare_refund_confirmation", "cancel_order"}:
         if set(args) != {"order_id", "reason"}:
             return {"ok": False, "error": "INVALID_ARGUMENTS"}
         if not all(isinstance(value, str) and value.strip() for value in args.values()):
@@ -61,7 +62,8 @@ def execute_tool(
         if not all(isinstance(value, str) and value.strip() for value in (session_id, thread_id)):
             return {"ok": False, "error": "MISSING_CONTEXT"}
 
-        return prepare_refund_confirmation(
+        prepare = prepare_cancel_confirmation if name == "cancel_order" else prepare_refund_confirmation
+        return prepare(
             user_id=user_id,
             session_id=session_id,
             thread_id=thread_id,

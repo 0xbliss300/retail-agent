@@ -96,6 +96,7 @@ def test_history_only_conversation_restores_context_and_saves_next_version(histo
     def model(client, messages, tools):
         assert messages[0]["content"] == demo_chat.build_system_prompt(
             demo_chat.ORDER_PROMPT, demo_chat.POLICY_PROMPT, demo_chat.REFUND_PROMPT,
+            demo_chat.CANCELLATION_PROMPT,
         )
         assert messages[1] == {"role": "user", "content": "查 ORD-1001"}
         assert messages[2]["content"] == "订单已支付，实付99元。"
