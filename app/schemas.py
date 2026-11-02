@@ -1,5 +1,7 @@
 """HTTP API 的请求与响应契约。"""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -9,6 +11,15 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     session_id: str | None = None
     thread_id: str | None = None
+
+
+class ConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    confirmation_id: str = Field(min_length=1)
+    decision: Literal["approve", "reject"]
 
 
 class PendingAction(BaseModel):

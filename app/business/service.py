@@ -142,6 +142,33 @@ def check_refund_eligibility(
         "amount_cents": order["paid_amount_cents"],
     }
 
+def get_confirmation(
+    *,
+    user_id: str,
+    session_id: str,
+    thread_id: str,
+    confirmation_id: str,
+) -> dict | None:
+    """读取当前上下文中的确认记录，不改变状态；用于重复确认时重放结果。"""
+    values = (user_id, session_id, thread_id, confirmation_id)
+    if not all(isinstance(value, str) and value.strip() for value in values):
+        return None
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN")
+            return get_confirmation_for_context(
+                conn,
+                user_id=user_id,
+                session_id=session_id,
+                thread_id=thread_id,
+                confirmation_id=confirmation_id,
+            )
+    finally:
+        conn.close()
+
+
 # 批准refund操作
 def approve_refund_confirmation(
     *,

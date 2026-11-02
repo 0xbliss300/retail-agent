@@ -5,7 +5,7 @@
 - `GET /health`：健康检查；
 - `POST /chat`：发送一条用户消息，一次性返回回复、会话编号和待确认操作；
 - `POST /chat/stream`：用 SSE 流式返回文本，结束时返回会话编号和待确认操作；
-- 确认和拒绝暂时仍在对话中用自然语言表达，独立的 `/confirm` 接口尚未实现。
+- `POST /confirm`：显式批准或拒绝待确认操作，不调用模型。
 
 HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。这不是多用户登录，
 只适合本地演示，不能直接暴露到公网。
@@ -160,10 +160,58 @@ conda run --no-capture-output -n retail-agent python -m scripts.demo_stream --me
 }
 ```
 
-此时订单和退款数据没有变化，只生成了待确认记录。用户下一条消息说“确认取消”或
-“确认提交”后，服务端重新校验授权、状态、期限和参数，再执行写入。
+此时订单和退款数据没有变化，只生成了待确认记录。
 
-独立的 `/confirm` 接口尚未实现；当前确认由模型识别用户意图，服务端仍会重新校验业务条件。
+确认有两种方式：
+
+- **显式接口（推荐给前端）**：调用 `POST /confirm`，直接提交 `approve` 或 `reject`；
+- **自然语言兼容路径**：在 `/chat` 或 `/chat/stream` 的下一条消息中说“确认取消”或“确认提交”。
+
+两条路径使用同一套确认记录和业务服务，服务端都会重新校验上下文、有效期、订单状态和金额。
+
+## 显式确认（`/confirm`）
+
+前端拿到 `pending_action` 后，优先用按钮调用 `/confirm`，不再依赖模型判断用户意图。
+
+```powershell
+$body = @{
+    session_id = "sess_..."
+    thread_id = "thread_..."
+    confirmation_id = "cfm_..."
+    decision = "approve"
+} | ConvertTo-Json
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/confirm" -Method Post -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 5
+```
+
+`decision` 只允许：
+
+| 值 | 行为 |
+|---|---|
+| `approve` | 批准取消或退款申请；执行前重新校验业务条件 |
+| `reject` | 拒绝当前操作；订单和退款数据不变 |
+
+返回结构与 `/chat` 相同：
+
+```json
+{
+  "reply": "订单 ORD-4001 已取消（canceled）。……",
+  "session_id": "sess_...",
+  "thread_id": "thread_...",
+  "pending_action": null,
+  "history_saved": true,
+  "warning": null
+}
+```
+
+行为约定：
+
+- 批准取消：订单变为 `canceled`；已付款时生成模拟取消退款流水。
+- 批准退款：创建 `pending` 售后申请，订单状态不变。
+- 拒绝：确认记录变为 `rejected`，不写订单、退款或操作日志。
+- 重复调用同一确认：返回首次保存的结果，不重复写业务数据。
+- 已过期、已消费、政策不允许或订单状态变化：不执行，返回解释性回复。
+- `/confirm` 不创建模型客户端、不调用模型，只做服务端校验和事务执行。
+- 确认编号必须属于当前 `session_id`、`thread_id` 和固定模拟用户，不能跨会话使用。
 
 ## 历史保存失败
 
@@ -181,9 +229,14 @@ conda run --no-capture-output -n retail-agent python -m scripts.demo_stream --me
 |---:|---|---|
 | 400 | `INVALID_SESSION_CONTEXT` | `session_id` 和 `thread_id` 没有同时提供，或为空 |
 | 404 | `CONVERSATION_NOT_FOUND` | 对话不存在、已过期，且没有待确认操作 |
+| 404 | `CONFIRMATION_NOT_FOUND` | 当前会话中不存在该确认编号 |
+| 409 | `CONFIRMATION_INVALID` | 确认记录的工具或参数无效 |
 | 422 | `EMPTY_MESSAGE` | `message` 只有空白 |
-| 422 | Pydantic 校验错误 | 缺少 `message`、消息过长，或包含 `user_id` 等额外字段 |
+| 422 | `INVALID_ARGUMENTS` | `/confirm` 的会话或确认编号为空 |
+| 422 | Pydantic 校验错误 | 缺少字段、`decision` 不是 `approve/reject`，或包含 `user_id` 等额外字段 |
 | 502 | `MODEL_ERROR` | 模型服务不可用 |
+
+过期的确认不会返回 4xx，而是返回 200 和说明“操作已过期”的 `reply`；此时业务数据没有变化。
 
 错误响应不会返回堆栈、SQL、API Key 或他人订单。
 
@@ -192,12 +245,12 @@ conda run --no-capture-output -n retail-agent python -m scripts.demo_stream --me
 - 身份固定在服务端：`DEMO_USER_ID = USER-001`，请求体不能覆盖。
 - `session_id` 和 `thread_id` 只用于定位当前模拟用户的对话，不是登录凭证。
 - 当前没有多用户登录、令牌签名或按用户隔离的 HTTP 会话；不要把服务直接暴露给外部用户。
-- 没有 `/confirm`、前端、LangGraph Checkpointer、Trace 或评测入口。
+- 没有前端、LangGraph Checkpointer、Trace 或评测入口。
 - 所有订单、退款和资金结果均为本地模拟数据。
 
 ## 测试
 
 ```powershell
-conda run -n retail-agent python -m pytest tests/test_api.py
+conda run -n retail-agent python -m pytest tests/test_api.py tests/test_streaming.py tests/test_confirm_api.py
 conda run -n retail-agent python -m pytest
 ```

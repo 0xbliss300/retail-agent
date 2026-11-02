@@ -13,8 +13,18 @@ from app.agent.prompts import (
     REFUND_PROMPT,
     build_system_prompt,
 )
-from app.harness.confirmation import load_active_confirmation
-from app.harness.runtime import create_messages, run_agent, stream_agent
+from app.business.service import (
+    approve_cancel_confirmation,
+    approve_refund_confirmation,
+    get_confirmation,
+)
+from app.harness.confirmation import load_active_confirmation, reject_confirmation
+from app.harness.runtime import (
+    create_messages,
+    format_confirmation_result,
+    run_agent,
+    stream_agent,
+)
 from app.storage.persistence import ConversationConflict, load_conversation, save_conversation
 
 SYSTEM_PROMPT = build_system_prompt(
@@ -40,6 +50,23 @@ def _current_time(now: datetime | None) -> datetime:
     if current.tzinfo is None or current.utcoffset() is None:
         raise ValueError("now 必须包含时区")
     return current
+
+
+def _save_context(context: dict, current: datetime) -> tuple[bool, str | None]:
+    try:
+        context["version"] = save_conversation(
+            user_id=context["user_id"],
+            session_id=context["session_id"],
+            thread_id=context["thread_id"],
+            messages=context["messages"],
+            now=current,
+            expected_version=context["version"],
+        )
+        return True, None
+    except ConversationConflict:
+        return False, HISTORY_CONFLICT_WARNING
+    except (sqlite3.Error, ValueError, TypeError):
+        return False, HISTORY_FAILURE_WARNING
 
 
 def new_conversation(*, user_id: str) -> dict:
@@ -146,23 +173,7 @@ def send_message(
         now=current,
     )
 
-    history_saved = True
-    warning = None
-    try:
-        context["version"] = save_conversation(
-            user_id=context["user_id"],
-            session_id=context["session_id"],
-            thread_id=context["thread_id"],
-            messages=context["messages"],
-            now=current,
-            expected_version=context["version"],
-        )
-    except ConversationConflict:
-        history_saved = False
-        warning = HISTORY_CONFLICT_WARNING
-    except (sqlite3.Error, ValueError, TypeError):
-        history_saved = False
-        warning = HISTORY_FAILURE_WARNING
+    history_saved, warning = _save_context(context, current)
 
     active = load_active_confirmation(
         user_id=context["user_id"],
@@ -218,23 +229,7 @@ def stream_message(
         }
         return
 
-    history_saved = True
-    warning = None
-    try:
-        context["version"] = save_conversation(
-            user_id=context["user_id"],
-            session_id=context["session_id"],
-            thread_id=context["thread_id"],
-            messages=context["messages"],
-            now=current,
-            expected_version=context["version"],
-        )
-    except ConversationConflict:
-        history_saved = False
-        warning = HISTORY_CONFLICT_WARNING
-    except (sqlite3.Error, ValueError, TypeError):
-        history_saved = False
-        warning = HISTORY_FAILURE_WARNING
+    history_saved, warning = _save_context(context, current)
 
     active = load_active_confirmation(
         user_id=context["user_id"],
@@ -254,4 +249,81 @@ def stream_message(
             "history_saved": history_saved,
             "warning": warning,
         },
+    }
+
+
+def decide_confirmation(
+    *,
+    context: dict,
+    confirmation_id: str,
+    decision: str,
+    now: datetime | None = None,
+) -> dict:
+    """通过显式决定批准或拒绝待确认操作；不调用模型。"""
+    if (
+        decision not in {"approve", "reject"}
+        or not isinstance(confirmation_id, str)
+        or not confirmation_id.strip()
+    ):
+        return {"error": "INVALID_ARGUMENTS"}
+
+    current = _current_time(now)
+    confirmation_id = confirmation_id.strip()
+    record = get_confirmation(
+        user_id=context["user_id"],
+        session_id=context["session_id"],
+        thread_id=context["thread_id"],
+        confirmation_id=confirmation_id,
+    )
+    if record is None:
+        return {"error": "CONFIRMATION_NOT_FOUND"}
+    if record["tool"] not in {"cancel_order", "create_refund"}:
+        return {"error": "CONFIRMATION_INVALID"}
+
+    was_pending = record["status"] == "pending"
+    service_context = {
+        "user_id": context["user_id"],
+        "session_id": context["session_id"],
+        "thread_id": context["thread_id"],
+        "confirmation_id": confirmation_id,
+    }
+    if decision == "reject":
+        result = reject_confirmation(**service_context, now=current)
+    elif record["tool"] == "cancel_order":
+        result = approve_cancel_confirmation(**service_context, now=current)
+    else:
+        result = approve_refund_confirmation(**service_context, now=current)
+
+    reply = format_confirmation_result(
+        is_cancel=record["tool"] == "cancel_order",
+        result=result,
+    )
+
+    history_saved = True
+    warning = None
+    if was_pending:
+        context["messages"].append(
+            {
+                "role": "user",
+                "content": "确认执行" if decision == "approve" else "拒绝操作",
+            }
+        )
+        context["messages"].append({"role": "assistant", "content": reply})
+        history_saved, warning = _save_context(context, current)
+
+    active = load_active_confirmation(
+        user_id=context["user_id"],
+        session_id=context["session_id"],
+        thread_id=context["thread_id"],
+        now=current,
+    )
+    context["active"] = active
+
+    return {
+        "reply": reply,
+        "session_id": context["session_id"],
+        "thread_id": context["thread_id"],
+        "pending_action": pending_action(active),
+        "history_saved": history_saved,
+        "warning": warning,
     }

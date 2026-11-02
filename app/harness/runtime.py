@@ -31,6 +31,54 @@ def _confirmation_answer(record: dict) -> str:
         "你可以说“确认提交”，或“算了，不申请了”。"
     )
 
+def format_confirmation_result(*, is_cancel: bool, result: dict) -> str:
+    """把批准或拒绝的服务端结果转换为用户可读回复。"""
+    if result.get("status") == "rejected":
+        return "已拒绝本次取消请求，本次未修改订单。" if is_cancel else "已拒绝当前操作，未创建退款申请。"
+
+    if is_cancel and result.get("ok") and result.get("status") == "canceled":
+        answer = f"订单 {result['order_id']} 已取消（canceled）。"
+        refund = result["refund"]
+        if refund is None:
+            return answer + "未付款订单无需退款，未生成退款流水。"
+        amount = refund["amount_cents"]
+        return (
+            answer + f"\n模拟取消退款流水：{refund['refund_id']}\n"
+            f"金额：{amount // 100}.{amount % 100:02d}元，流水状态：completed。"
+            "这是本地模拟结果，未发生真实资金划转。"
+        )
+
+    if result.get("ok") and result.get("status") == "submitted":
+        amount = result["amount_cents"]
+        return (
+            f"订单 {result['order_id']} 的退款申请已提交。\n"
+            f"申请编号：{result['refund_id']}\n"
+            f"申请金额：{amount // 100}.{amount % 100:02d} 元\n"
+            "申请状态：pending（待处理）。提交申请不代表退款已到账。"
+        )
+
+    error = result.get("error", "INTERNAL_ERROR")
+    if error == "CONFIRMATION_EXPIRED":
+        if is_cancel:
+            return "当前取消操作已过期，本次未修改订单。请重新发起取消。"
+        return "当前操作已过期，未创建退款申请。请重新发起申请。"
+    if error == "CONFIRMATION_STALE":
+        if is_cancel:
+            return (
+                "订单状态或付款信息已变化，本次未执行取消（CONFIRMATION_STALE）。"
+                "请先拒绝当前操作，再重新发起取消以核对新摘要。"
+            )
+        return (
+            "订单金额已变化，未提交退款申请（CONFIRMATION_STALE）。"
+            "请先拒绝当前操作，再重新发起申请以核对新金额。"
+        )
+
+    reason = result.get("reason", "当前操作无法执行。")
+    if is_cancel:
+        return f"本次未执行取消（{error}）：{reason}"
+    return f"未创建新的退款申请（{error}）：{reason}"
+
+
 # 处理操作
 def _handle_pending_confirmation(
     active: dict,
@@ -69,51 +117,11 @@ def _handle_pending_confirmation(
 
     if intent == "reject":
         result = reject_confirmation(**context, now=decision_time)
-        if result.get("status") == "rejected":
-            return "已拒绝本次取消请求，本次未修改订单。" if is_cancel else "已拒绝当前操作，未创建退款申请。"
     else:
         approve = approve_cancel_confirmation if is_cancel else approve_refund_confirmation
         result = approve(**context, now=decision_time)
-        if is_cancel and result.get("ok") and result.get("status") == "canceled":
-            answer = f"订单 {result['order_id']} 已取消（canceled）。"
-            refund = result["refund"]
-            if refund is None:
-                return answer + "未付款订单无需退款，未生成退款流水。"
-            amount = refund["amount_cents"]
-            return (
-                answer + f"\n模拟取消退款流水：{refund['refund_id']}\n"
-                f"金额：{amount // 100}.{amount % 100:02d}元，流水状态：completed。"
-                "这是本地模拟结果，未发生真实资金划转。"
-            )
-        if result.get("ok") and result.get("status") == "submitted":
-            amount = result["amount_cents"]
-            return (
-                f"订单 {result['order_id']} 的退款申请已提交。\n"
-                f"申请编号：{result['refund_id']}\n"
-                f"申请金额：{amount // 100}.{amount % 100:02d} 元\n"
-                "申请状态：pending（待处理）。提交申请不代表退款已到账。"
-            )
 
-    error = result.get("error", "INTERNAL_ERROR")
-    if error == "CONFIRMATION_EXPIRED":
-        if is_cancel:
-            return "当前取消操作已过期，本次未修改订单。请重新发起取消。"
-        return "当前操作已过期，未创建退款申请。请重新发起申请。"
-    if error == "CONFIRMATION_STALE":
-        if is_cancel:
-            return (
-                "订单状态或付款信息已变化，本次未执行取消（CONFIRMATION_STALE）。"
-                "请先拒绝当前操作，再重新发起取消以核对新摘要。"
-            )
-        return (
-            "订单金额已变化，未提交退款申请（CONFIRMATION_STALE）。"
-            "请先拒绝当前操作，再重新发起申请以核对新金额。"
-        )
-
-    reason = result.get("reason", "当前操作无法执行。")
-    if is_cancel:
-        return f"本次未执行取消（{error}）：{reason}"
-    return f"未创建新的退款申请（{error}）：{reason}"
+    return format_confirmation_result(is_cancel=is_cancel, result=result)
 
 def run_agent(
     user_message: str,

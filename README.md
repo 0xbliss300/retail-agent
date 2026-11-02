@@ -687,12 +687,12 @@ uvicorn app.main:app --reload --port 8000
 | `POST` | `/chat` | 已实现；一次性返回回复、会话编号和待确认操作 |
 | `POST` | `/chat/stream` | 已实现；SSE 流式输出文本，结束时返回会话编号和待确认操作 |
 | `GET` | `/health` | 已实现；返回服务状态和固定模拟身份 |
-| `POST` | `/confirm` | 尚未实现；当前在对话中用自然语言确认 |
+| `POST` | `/confirm` | 已实现；显式批准或拒绝待确认操作，不调用模型 |
 
 HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。
-`/chat` 保持一次性 JSON，`/chat/stream` 使用 SSE；独立 `/confirm`、多用户登录
-和 HTTP 会话隔离尚未实现。请求、响应、流式事件和错误码见
-[HTTP 对话接口](docs/http_api.md)。
+`/chat` 保持一次性 JSON，`/chat/stream` 使用 SSE；`/confirm` 提供确定性的
+批准/拒绝动作，自然语言确认仍作为兼容路径保留。多用户登录和 HTTP 会话隔离尚未实现。
+请求、响应、流式事件和错误码见 [HTTP 对话接口](docs/http_api.md)。
 
 ### 9.6 运行测试
 

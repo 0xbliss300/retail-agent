@@ -8,8 +8,13 @@ from fastapi.responses import StreamingResponse
 from openai import APIError
 
 from app.agent.model_client import create_client
-from app.harness.conversation import open_conversation, send_message, stream_message
-from app.schemas import ChatRequest, ChatResponse, HealthResponse
+from app.harness.conversation import (
+    decide_confirmation,
+    open_conversation,
+    send_message,
+    stream_message,
+)
+from app.schemas import ChatRequest, ChatResponse, ConfirmRequest, HealthResponse
 
 APP_VERSION = "0.1.0"
 DEMO_USER_ID = "USER-001"
@@ -93,6 +98,69 @@ def chat(request: ChatRequest) -> ChatResponse:
                 "message": "模型服务暂时不可用，请稍后重试。",
             },
         ) from exc
+
+    return ChatResponse(**result)
+
+
+@app.post("/confirm", response_model=ChatResponse)
+def confirm(request: ConfirmRequest) -> ChatResponse:
+    session_id = request.session_id.strip()
+    thread_id = request.thread_id.strip()
+    confirmation_id = request.confirmation_id.strip()
+    if not all((session_id, thread_id, confirmation_id)):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "INVALID_ARGUMENTS",
+                "message": "会话编号和确认编号不能为空。",
+            },
+        )
+
+    now = datetime.now(UTC)
+    try:
+        context = open_conversation(
+            user_id=DEMO_USER_ID,
+            session_id=session_id,
+            thread_id=thread_id,
+            now=now,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "INVALID_SESSION_CONTEXT", "message": str(exc)},
+        ) from exc
+
+    if context is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "CONVERSATION_NOT_FOUND",
+                "message": "对话不存在或已过期，请重新发起操作。",
+            },
+        )
+
+    result = decide_confirmation(
+        context=context,
+        confirmation_id=confirmation_id,
+        decision=request.decision,
+        now=now,
+    )
+    error = result.get("error")
+    if error == "CONFIRMATION_NOT_FOUND":
+        raise HTTPException(
+            status_code=404,
+            detail={"error": error, "message": "未找到当前会话中的待确认操作。"},
+        )
+    if error == "CONFIRMATION_INVALID":
+        raise HTTPException(
+            status_code=409,
+            detail={"error": error, "message": "确认记录无效。"},
+        )
+    if error == "INVALID_ARGUMENTS":
+        raise HTTPException(
+            status_code=422,
+            detail={"error": error, "message": "确认参数无效。"},
+        )
 
     return ChatResponse(**result)
 
