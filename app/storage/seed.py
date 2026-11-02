@@ -79,6 +79,45 @@ def seed_cancellation_orders(*, now: datetime | None = None) -> None:
         conn.close()
 
 
+def seed_extra_orders(*, now: datetime | None = None) -> None:
+    """新增两条当前可演示的订单；已有同号订单不覆盖，也不刷新时间。"""
+    reference = now if now is not None else datetime.now(UTC)
+    if reference.tzinfo is None or reference.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+    reference = reference.astimezone(UTC)
+    conn = get_connection()
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO orders (
+                    order_id, user_id, status,
+                    paid_amount_cents, paid_at, shipped_at
+                )
+                VALUES (?, 'USER-001', ?, ?, ?, ?)
+                ON CONFLICT(order_id) DO NOTHING
+                """,
+                [
+                    (
+                        "ORD-4001",
+                        "paid",
+                        25900,
+                        (reference - timedelta(hours=1)).isoformat(),
+                        None,
+                    ),
+                    (
+                        "ORD-4002",
+                        "shipped",
+                        15900,
+                        (reference - timedelta(days=2)).isoformat(),
+                        (reference - timedelta(days=1)).isoformat(),
+                    ),
+                ],
+            )
+    finally:
+        conn.close()
+
+
 def seed_logistics() -> None:
     """为模拟订单补充物流；已有物流与人工修改的轨迹不覆盖、不追加。"""
     conn = get_connection()

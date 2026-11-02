@@ -213,6 +213,10 @@ refund_requests.status = completed
 - V1 只支持全额退款，金额由服务端根据实付金额计算，模型不能传入金额。
 - Agent 在申请为 `pending` 时，只能回复“申请已提交”，不能声称“已退款”。
 
+当前已接通本地模拟结算：内部脚本按 `refund_id` 把 `pending` 售后申请改为 `completed`，
+并在同一事务把订单改为 `refunded`，同时写入只追加的结算记录；不接真实支付。
+运行、拒绝路径和数据验收见 [内部模拟退款结算](docs/refund_settlement.md)。
+
 ### 3.3 取消与退款时间窗口
 
 | 操作 | 条件 |

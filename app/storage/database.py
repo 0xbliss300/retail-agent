@@ -175,6 +175,44 @@ def migrate_cancellation(conn: sqlite3.Connection) -> None:
         """)
 
 
+def migrate_refund_settlements(conn: sqlite3.Connection) -> None:
+    """退款完成记录只追加保存；结算必须同时更新退款申请和订单。"""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS refund_settlements (
+            settlement_id TEXT PRIMARY KEY NOT NULL,
+            refund_id TEXT NOT NULL UNIQUE,
+            order_id TEXT NOT NULL UNIQUE,
+            user_id TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL
+                CHECK (
+                    typeof(amount_cents) = 'integer'
+                    AND amount_cents >= 0
+                ),
+            previous_refund_status TEXT NOT NULL
+                CHECK (previous_refund_status = 'pending'),
+            new_refund_status TEXT NOT NULL
+                CHECK (new_refund_status = 'completed'),
+            previous_order_status TEXT NOT NULL
+                CHECK (previous_order_status IN ('shipped', 'delivered')),
+            new_order_status TEXT NOT NULL
+                CHECK (new_order_status = 'refunded'),
+            created_at TEXT NOT NULL,
+
+            FOREIGN KEY (refund_id)
+                REFERENCES refund_requests(refund_id),
+
+            FOREIGN KEY (order_id, user_id)
+                REFERENCES orders(order_id, user_id)
+        )
+    """)
+    for action in ("UPDATE", "DELETE"):
+        conn.execute(f"""
+            CREATE TRIGGER IF NOT EXISTS refund_settlements_no_{action.lower()}
+            BEFORE {action} ON refund_settlements
+            BEGIN SELECT RAISE(ABORT, 'refund_settlements is append-only'); END
+        """)
+
+
 def init_db():
     conn = get_connection()
     conn.execute("BEGIN")
@@ -207,6 +245,7 @@ def init_db():
         migrate_chat_threads(conn)
         migrate_logistics(conn)
         migrate_cancellation(conn)
+        migrate_refund_settlements(conn)
 
         conn.executemany(
             """

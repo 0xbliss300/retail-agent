@@ -9,6 +9,7 @@ from app.business import cancellation
 from app.business.policies import POLICIES, check_refund_window
 from app.business.repository import (
     close_pending_confirmation,
+    complete_refund_in_transaction,
     consume_refund_confirmation,
     get_active_refund,
     get_confirmation_for_context,
@@ -16,7 +17,11 @@ from app.business.repository import (
     get_logistics_for_user,
     get_order_for_user,
     get_orders_for_user,
+    get_refund_for_settlement,
+    get_refund_settlement,
     insert_refund_request,
+    insert_refund_settlement,
+    refund_order_in_transaction,
 )
 from app.storage.database import get_connection
 
@@ -276,6 +281,113 @@ def approve_refund_confirmation(
         return result
     finally:
         conn.close()
+
+
+def settle_refund(*, refund_id: str, now: datetime) -> dict:
+    """内部模拟结算：完成 pending 售后申请，并原子地把订单置为 refunded。
+
+    仅由可信内部入口调用，不作为 Agent 工具暴露。重复调用返回已保存结果。
+    """
+    if not isinstance(refund_id, str) or not refund_id.strip():
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+    now = now.astimezone(UTC)
+    refund_id = refund_id.strip()
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            refund = get_refund_for_settlement(conn, refund_id=refund_id)
+            if refund is None:
+                return {"ok": False, "error": "REFUND_NOT_FOUND"}
+
+            # 取消退款在取消时已经完成，不能再次进入售后结算。
+            if refund["kind"] != "after_sales":
+                return {"ok": False, "error": "REFUND_KIND_NOT_SUPPORTED"}
+
+            if refund["status"] == "completed":
+                settlement = get_refund_settlement(conn, refund_id=refund_id)
+                if (
+                    settlement is None
+                    or settlement["order_id"] != refund["order_id"]
+                    or settlement["user_id"] != refund["user_id"]
+                    or settlement["amount_cents"] != refund["amount_cents"]
+                    or refund["order_status"] != "refunded"
+                ):
+                    return {"ok": False, "error": "STATE_INCONSISTENT"}
+                return {
+                    "ok": True,
+                    "refund_id": refund["refund_id"],
+                    "order_id": refund["order_id"],
+                    "amount_cents": refund["amount_cents"],
+                    "refund_status": "completed",
+                    "order_status": "refunded",
+                    "replayed": True,
+                }
+
+            if refund["status"] != "pending":
+                return {
+                    "ok": False,
+                    "error": "REFUND_NOT_PENDING",
+                    "status": refund["status"],
+                }
+
+            if refund["order_status"] not in {"shipped", "delivered"}:
+                return {
+                    "ok": False,
+                    "error": "ORDER_STATUS_NOT_SUPPORTED",
+                    "status": refund["order_status"],
+                }
+
+            # V1 只支持全额退款；金额在申请时已由服务端按实付金额确定。
+            if refund["amount_cents"] != refund["paid_amount_cents"]:
+                return {"ok": False, "error": "AMOUNT_MISMATCH"}
+
+            timestamp = now.isoformat()
+            result = {
+                "ok": True,
+                "refund_id": refund["refund_id"],
+                "order_id": refund["order_id"],
+                "amount_cents": refund["amount_cents"],
+                "refund_status": "completed",
+                "order_status": "refunded",
+                "replayed": False,
+            }
+
+            complete_refund_in_transaction(
+                conn,
+                refund_id=refund_id,
+                timestamp=timestamp,
+            )
+            refund_order_in_transaction(
+                conn,
+                user_id=refund["user_id"],
+                order_id=refund["order_id"],
+                expected_status=refund["order_status"],
+            )
+            insert_refund_settlement(
+                conn,
+                record={
+                    "settlement_id": f"stl_{uuid4().hex}",
+                    "refund_id": refund["refund_id"],
+                    "order_id": refund["order_id"],
+                    "user_id": refund["user_id"],
+                    "amount_cents": refund["amount_cents"],
+                    "previous_refund_status": "pending",
+                    "new_refund_status": "completed",
+                    "previous_order_status": refund["order_status"],
+                    "new_order_status": "refunded",
+                    "created_at": timestamp,
+                },
+            )
+
+        # 退款、订单和结算记录在这里一起提交。
+        return result
+    finally:
+        conn.close()
+
 
 def get_refund_status(*, user_id: str, order_id: str) -> dict:
     """查询本人订单的最新售后申请；没有申请时返回 refund=None。"""

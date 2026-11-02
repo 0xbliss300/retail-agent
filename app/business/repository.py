@@ -313,6 +313,105 @@ def get_latest_after_sales_refund(
     finally:
         conn.close()
 
+def get_refund_for_settlement(
+    conn: sqlite3.Connection,
+    *,
+    refund_id: str,
+) -> dict | None:
+    """读取待结算退款及其订单；调用方持有事务。"""
+    row = conn.execute(
+        """
+        SELECT r.refund_id, r.order_id, r.user_id, r.kind,
+               r.amount_cents, r.reason, r.status,
+               r.created_at, r.updated_at,
+               o.status AS order_status,
+               o.paid_amount_cents
+        FROM refund_requests AS r
+        JOIN orders AS o
+          ON o.order_id = r.order_id
+         AND o.user_id = r.user_id
+        WHERE r.refund_id = ?
+        """,
+        (refund_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def get_refund_settlement(
+    conn: sqlite3.Connection,
+    *,
+    refund_id: str,
+) -> dict | None:
+    """读取已保存的结算结果，用于重复调用时重放。"""
+    row = conn.execute(
+        "SELECT * FROM refund_settlements WHERE refund_id = ?",
+        (refund_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def complete_refund_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    refund_id: str,
+    timestamp: str,
+) -> None:
+    """只允许 pending 变为 completed；调用方负责提交或回滚。"""
+    cursor = conn.execute(
+        """
+        UPDATE refund_requests
+        SET status = 'completed', updated_at = ?
+        WHERE refund_id = ? AND status = 'pending'
+        """,
+        (timestamp, refund_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("结算时退款申请状态发生变化")
+
+
+def refund_order_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    order_id: str,
+    expected_status: str,
+) -> None:
+    """把已发货或已送达订单置为 refunded；状态变化时由调用方回滚。"""
+    cursor = conn.execute(
+        """
+        UPDATE orders
+        SET status = 'refunded'
+        WHERE order_id = ? AND user_id = ? AND status = ?
+        """,
+        (order_id, user_id, expected_status),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("结算时订单状态发生变化")
+
+
+def insert_refund_settlement(
+    conn: sqlite3.Connection,
+    *,
+    record: dict,
+) -> None:
+    """在调用方事务中写入只追加结算记录，不自行提交。"""
+    conn.execute(
+        """
+        INSERT INTO refund_settlements (
+            settlement_id, refund_id, order_id, user_id, amount_cents,
+            previous_refund_status, new_refund_status,
+            previous_order_status, new_order_status, created_at
+        )
+        VALUES (
+            :settlement_id, :refund_id, :order_id, :user_id, :amount_cents,
+            :previous_refund_status, :new_refund_status,
+            :previous_order_status, :new_order_status, :created_at
+        )
+        """,
+        record,
+    )
+
+
 def get_pending_confirmations_for_user(
     conn: sqlite3.Connection,
     *,
