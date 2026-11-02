@@ -675,15 +675,24 @@ python scripts/init_db.py --reset
 
 ### 9.5 启动服务
 
+先初始化数据库，再启动 FastAPI：
+
 ```bash
+python -m scripts.init_db
 uvicorn app.main:app --reload --port 8000
 ```
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/chat` | 发送用户消息，返回回复或待确认操作 |
-| `POST` | `/confirm` | 确认或拒绝待确认操作 |
-| `GET` | `/health` | 返回服务、模型模式、数据库与版本信息 |
+| `POST` | `/chat` | 已实现；一次性返回回复、会话编号和待确认操作 |
+| `POST` | `/chat/stream` | 已实现；SSE 流式输出文本，结束时返回会话编号和待确认操作 |
+| `GET` | `/health` | 已实现；返回服务状态和固定模拟身份 |
+| `POST` | `/confirm` | 尚未实现；当前在对话中用自然语言确认 |
+
+HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。
+`/chat` 保持一次性 JSON，`/chat/stream` 使用 SSE；独立 `/confirm`、多用户登录
+和 HTTP 会话隔离尚未实现。请求、响应、流式事件和错误码见
+[HTTP 对话接口](docs/http_api.md)。
 
 ### 9.6 运行测试
 
