@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
+from time import monotonic
 
 from app.business.tools import (
     check_refund_eligibility,
@@ -22,6 +23,7 @@ from app.harness.recovery import (
     attempts_for,
     should_retry,
 )
+from app.observability.tracing import emit_trace
 
 TOOL_TIMEOUT_SECONDS = 5.0
 
@@ -141,14 +143,31 @@ def _run_with_timeout(handler: Callable[[], dict], timeout: float) -> dict:
     return {"ok": False, "error": "TOOL_ERROR"}
 
 
-def _run_handler(name: str, handler: Callable[[], dict]) -> dict:
+def _run_handler(name: str, handler: Callable[[], dict]) -> tuple[dict, int]:
     """按工具类型执行；只有只读工具会安全重试一次。"""
     result: dict = {"ok": False, "error": "TOOL_ERROR"}
+    attempts = 0
     for _ in range(attempts_for(name)):
+        attempts += 1
         result = _run_with_timeout(handler, TOOL_TIMEOUT_SECONDS)
         if not should_retry(name, result):
             break
-    return result
+    return result, attempts
+
+
+def _rejected(name: str, error: str, trace_id: str | None) -> dict:
+    """记录未进入执行的工具调用，例如未知工具或参数不合法。"""
+    emit_trace(
+        "tool.call",
+        run_id=trace_id,
+        tool=name,
+        ok=False,
+        status="rejected",
+        error=error,
+        attempts=0,
+        duration_ms=0.0,
+    )
+    return {"ok": False, "error": error}
 
 
 def execute_tool(
@@ -158,19 +177,20 @@ def execute_tool(
     session_id: str | None = None,
     thread_id: str | None = None,
     now: datetime | None = None,
+    trace_id: str | None = None,
 ) -> dict:
     name = tool_call.function.name
 
     if name not in READ_ONLY_TOOLS | WRITE_TOOLS:
-        return {"ok": False, "error": "UNKNOWN_TOOL"}
+        return _rejected(name, "UNKNOWN_TOOL", trace_id)
 
     try:
         args = json.loads(tool_call.function.arguments)
     except (json.JSONDecodeError, TypeError):
-        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+        return _rejected(name, "INVALID_ARGUMENTS", trace_id)
 
     if not isinstance(args, dict):
-        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+        return _rejected(name, "INVALID_ARGUMENTS", trace_id)
 
     try:
         handler = _resolve_handler(
@@ -182,16 +202,40 @@ def execute_tool(
             now,
         )
     except _InvalidArguments:
-        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+        return _rejected(name, "INVALID_ARGUMENTS", trace_id)
 
     if name in WRITE_TOOLS and not all(
         isinstance(value, str) and value.strip()
         for value in (session_id, thread_id)
     ):
-        return {"ok": False, "error": "MISSING_CONTEXT"}
+        return _rejected(name, "MISSING_CONTEXT", trace_id)
 
+    started = monotonic()
     try:
-        return _run_handler(name, handler)
+        result, attempts = _run_handler(name, handler)
     except Exception:
         # 兜底：执行边界的任何意外都不能让整轮对话崩溃。
-        return {"ok": False, "error": "TOOL_ERROR"}
+        result, attempts = {"ok": False, "error": "TOOL_ERROR"}, 0
+
+    duration_ms = round((monotonic() - started) * 1000, 2)
+    emit_trace(
+        "tool.call",
+        run_id=trace_id,
+        tool=name,
+        ok=result.get("ok") is True,
+        status="ok" if result.get("ok") is True else "error",
+        error=result.get("error"),
+        attempts=attempts,
+        duration_ms=duration_ms,
+    )
+
+    if result.get("status") == "awaiting_confirmation":
+        emit_trace(
+            "confirmation.prepared",
+            run_id=trace_id,
+            tool=name,
+            order_id=args.get("order_id"),
+            expires_at=result.get("expires_at"),
+        )
+
+    return result

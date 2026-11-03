@@ -2,6 +2,7 @@
 
 import sqlite3
 from datetime import UTC, datetime
+from time import monotonic
 from uuid import uuid4
 
 from openai import APIError
@@ -25,6 +26,7 @@ from app.harness.runtime import (
     run_agent,
     stream_agent,
 )
+from app.observability.tracing import emit_trace, new_run_id
 from app.storage.persistence import ConversationConflict, load_conversation, save_conversation
 
 SYSTEM_PROMPT = build_system_prompt(
@@ -163,34 +165,65 @@ def send_message(
         raise ValueError("message 不能为空")
     current = _current_time(now)
 
-    answer = run_agent(
-        message,
-        context["user_id"],
-        context["messages"],
-        client,
+    run_id = new_run_id()
+    started = monotonic()
+    emit_trace(
+        "agent.start",
+        run_id=run_id,
+        source="chat",
         session_id=context["session_id"],
         thread_id=context["thread_id"],
-        now=current,
+        message_chars=len(message),
     )
+    answer = ""
+    history_saved = False
+    warning = None
+    active = None
+    status = "ok"
+    try:
+        answer = run_agent(
+            message,
+            context["user_id"],
+            context["messages"],
+            client,
+            session_id=context["session_id"],
+            thread_id=context["thread_id"],
+            now=current,
+            trace_id=run_id,
+        )
 
-    history_saved, warning = _save_context(context, current)
+        history_saved, warning = _save_context(context, current)
 
-    active = load_active_confirmation(
-        user_id=context["user_id"],
-        session_id=context["session_id"],
-        thread_id=context["thread_id"],
-        now=current,
-    )
-    context["active"] = active
+        active = load_active_confirmation(
+            user_id=context["user_id"],
+            session_id=context["session_id"],
+            thread_id=context["thread_id"],
+            now=current,
+        )
+        context["active"] = active
 
-    return {
-        "reply": answer,
-        "session_id": context["session_id"],
-        "thread_id": context["thread_id"],
-        "pending_action": pending_action(active),
-        "history_saved": history_saved,
-        "warning": warning,
-    }
+        return {
+            "reply": answer,
+            "session_id": context["session_id"],
+            "thread_id": context["thread_id"],
+            "pending_action": pending_action(active),
+            "history_saved": history_saved,
+            "warning": warning,
+        }
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        emit_trace(
+            "agent.end",
+            run_id=run_id,
+            source="chat",
+            status=status,
+            duration_ms=round((monotonic() - started) * 1000, 2),
+            reply_chars=len(answer),
+            history_saved=history_saved,
+            pending=active is not None,
+        )
 
 
 def stream_message(
@@ -205,51 +238,85 @@ def stream_message(
         raise ValueError("message 不能为空")
     current = _current_time(now)
 
+    run_id = new_run_id()
+    started = monotonic()
+    emit_trace(
+        "agent.start",
+        run_id=run_id,
+        source="stream",
+        session_id=context["session_id"],
+        thread_id=context["thread_id"],
+        message_chars=len(message),
+    )
     reply_parts: list[str] = []
+    history_saved = False
+    warning = None
+    active = None
+    status = "ok"
     try:
-        for event in stream_agent(
-            message,
-            context["user_id"],
-            context["messages"],
-            client,
+        try:
+            for event in stream_agent(
+                message,
+                context["user_id"],
+                context["messages"],
+                client,
+                session_id=context["session_id"],
+                thread_id=context["thread_id"],
+                now=current,
+                trace_id=run_id,
+            ):
+                if event.get("event") == "token":
+                    reply_parts.append(event["data"]["text"])
+                yield event
+        except APIError:
+            status = "model_error"
+            yield {
+                "event": "error",
+                "data": {
+                    "error": "MODEL_ERROR",
+                    "message": "模型服务暂时不可用，请稍后重试。",
+                },
+            }
+            return
+
+        history_saved, warning = _save_context(context, current)
+
+        active = load_active_confirmation(
+            user_id=context["user_id"],
             session_id=context["session_id"],
             thread_id=context["thread_id"],
             now=current,
-        ):
-            if event.get("event") == "token":
-                reply_parts.append(event["data"]["text"])
-            yield event
-    except APIError:
+        )
+        context["active"] = active
+
         yield {
-            "event": "error",
+            "event": "done",
             "data": {
-                "error": "MODEL_ERROR",
-                "message": "模型服务暂时不可用，请稍后重试。",
+                "reply": "".join(reply_parts),
+                "session_id": context["session_id"],
+                "thread_id": context["thread_id"],
+                "pending_action": pending_action(active),
+                "history_saved": history_saved,
+                "warning": warning,
             },
         }
-        return
-
-    history_saved, warning = _save_context(context, current)
-
-    active = load_active_confirmation(
-        user_id=context["user_id"],
-        session_id=context["session_id"],
-        thread_id=context["thread_id"],
-        now=current,
-    )
-    context["active"] = active
-
-    yield {
-        "event": "done",
-        "data": {
-            "reply": "".join(reply_parts),
-            "session_id": context["session_id"],
-            "thread_id": context["thread_id"],
-            "pending_action": pending_action(active),
-            "history_saved": history_saved,
-            "warning": warning,
-        },
-    }
+    except GeneratorExit:
+        status = "cancelled"
+        raise
+    except Exception:
+        status = "error"
+        raise
+    finally:
+        emit_trace(
+            "agent.end",
+            run_id=run_id,
+            source="stream",
+            status=status,
+            duration_ms=round((monotonic() - started) * 1000, 2),
+            reply_chars=len("".join(reply_parts)),
+            history_saved=history_saved,
+            pending=active is not None,
+        )
 
 
 def decide_confirmation(
@@ -293,6 +360,17 @@ def decide_confirmation(
         result = approve_cancel_confirmation(**service_context, now=current)
     else:
         result = approve_refund_confirmation(**service_context, now=current)
+
+    emit_trace(
+        "confirmation.decision",
+        run_id=new_run_id(),
+        source="explicit",
+        tool=record["tool"],
+        decision=decision,
+        was_pending=was_pending,
+        status=result.get("status"),
+        error=result.get("error"),
+    )
 
     reply = format_confirmation_result(
         is_cancel=record["tool"] == "cancel_order",

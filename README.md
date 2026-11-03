@@ -352,16 +352,17 @@ Checkpointer 使用独立 SQLite 文件，避免与业务数据库混在一起�
 
 ### 5.5 可观测性
 
-Trace 采用 JSONL，记录：
+Trace 采用 JSONL，默认写入 `data/traces.jsonl`，记录：
 
-- `run_id`、`session_id`、`case_id`、`baseline_id`；
-- 模型调用；
-- 工具名称、校验后的参数、耗时、结果；
-- 确认创建、批准、拒绝、过期、消费；
-- 中断、恢复、重试；
-- 操作日志、幂等键、最终业务状态。
+- 一轮对话的 `run_id`、`session_id`、`thread_id` 和耗时；
+- 模型调用开始/结束、消息数量、工具调用数量；
+- 工具名称、结果状态、错误码、尝试次数和耗时；
+- 待确认操作的创建、意图识别和批准/拒绝结果；
+- 流式输出被取消或模型调用失败。
 
-Trace 不记录 API Key、完整个人信息或模型隐藏推理过程。
+Trace 不记录完整用户消息、模型回复、退款原因、确认凭证、API Key 或模型隐藏推理过程。
+写入是尽力而为，Trace 失败不会影响聊天和业务写入。
+事件字段、配置和查看方式见 [单轮对话 Trace](docs/tracing.md)。
 
 ---
 
@@ -637,7 +638,7 @@ LLM_MODEL=deepseek-chat
 
 当前模型客户端通过 `python-dotenv` 加载项目根目录的 `.env`，读取上述三项配置；已存在的系统环境变量优先于 `.env` 中的同名值。调用真实模型前需要完成配置，否则可能因缺少变量或认证失败而报错。
 
-下面是项目规划的完整配置清单；除上述三项外，其余配置尚未接入当前代码，填写后暂不会生效：
+下面是项目规划的完整配置清单；除上述三项外，`TRACE_ENABLED` 和 `TRACE_PATH` 也已接入，其余配置尚未接入当前代码，填写后暂不会生效：
 
 | 变量 | 示例 | 说明 |
 |---|---|---|
@@ -654,8 +655,8 @@ LLM_MODEL=deepseek-chat
 | `TOOL_TIMEOUT_SECONDS` | `5` | 单工具超时 |
 | `MAX_TOOL_RETRIES` | `1` | 安全重试次数 |
 | `CONFIRMATION_TTL_SECONDS` | `300` | 确认有效期 |
-| `TRACE_ENABLED` | `true` | 是否启用 Trace |
-| `TRACE_PATH` | `./data/traces.jsonl` | Trace 输出 |
+| `TRACE_ENABLED` | `true` | 是否启用 Trace（已接入） |
+| `TRACE_PATH` | `./data/traces.jsonl` | Trace 输出（已接入） |
 
 可以在项目根目录运行以下命令检查忽略规则：
 

@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime
+from time import monotonic
 
 from app.agent.confirmation_intent import classify_confirmation_intent
 from app.agent.model_client import request_model, stream_model
@@ -9,6 +10,7 @@ from app.business.service import approve_cancel_confirmation, approve_refund_con
 from app.business.tools import TOOLS
 from app.harness.confirmation import load_active_confirmation, reject_confirmation
 from app.harness.tool_executor import execute_tool
+from app.observability.tracing import emit_trace, new_run_id
 
 
 def create_messages(system_prompt: str) -> list:
@@ -108,6 +110,7 @@ def _handle_pending_confirmation(
     client,
     *,
     now: datetime | None,
+    trace_id: str | None = None,
 ) -> str:
     if active["status"] == "approved":
         return "当前线程有已批准且尚未结束的操作，请先处理该操作。"
@@ -119,6 +122,12 @@ def _handle_pending_confirmation(
         client,
         user_message=user_message,
         summary=active["summary"],
+    )
+    emit_trace(
+        "confirmation.intent",
+        run_id=trace_id,
+        tool=active["tool"],
+        intent=intent,
     )
     if intent == "other":
         return (
@@ -143,6 +152,15 @@ def _handle_pending_confirmation(
         approve = approve_cancel_confirmation if is_cancel else approve_refund_confirmation
         result = approve(**context, now=decision_time)
 
+    emit_trace(
+        "confirmation.decision",
+        run_id=trace_id,
+        source="chat",
+        tool=active["tool"],
+        decision="reject" if intent == "reject" else "approve",
+        status=result.get("status"),
+        error=result.get("error"),
+    )
     return format_confirmation_result(is_cancel=is_cancel, result=result)
 
 def run_agent(
@@ -155,11 +173,13 @@ def run_agent(
     session_id: str | None = None,
     thread_id: str | None = None,
     now: datetime | None = None,
+    trace_id: str | None = None,
 ) -> str:
     """处理一条用户消息，并将本轮对话追加到已有历史。"""
     if max_steps < 1:
         raise ValueError("max_steps 必须至少为 1")
 
+    trace_id = trace_id or new_run_id()
     messages.append({"role": "user", "content": user_message})
 
     current_time = now if now is not None else datetime.now(UTC)
@@ -179,12 +199,30 @@ def run_agent(
             user_message,
             client,
             now=now,
+            trace_id=trace_id,
         )
         messages.append({"role": "assistant", "content": answer})
         return answer
 
-    for _ in range(max_steps):
-        message = request_model(client, messages, TOOLS)
+    for step in range(max_steps):
+        emit_trace("model.start", run_id=trace_id, step=step, message_count=len(messages))
+        model_started = monotonic()
+        model_status = "ok"
+        message = None
+        try:
+            message = request_model(client, messages, TOOLS)
+        except Exception:
+            model_status = "error"
+            raise
+        finally:
+            emit_trace(
+                "model.end",
+                run_id=trace_id,
+                step=step,
+                status=model_status,
+                duration_ms=round((monotonic() - model_started) * 1000, 2),
+                tool_call_count=len(message.tool_calls or []) if message else 0,
+            )
         messages.append(message.model_dump(exclude_none=True))
 
         if not message.tool_calls:
@@ -203,6 +241,7 @@ def run_agent(
                     session_id=session_id,
                     thread_id=thread_id,
                     now=current_time,
+                    trace_id=trace_id,
                 )
                 if result.get("status") == "awaiting_confirmation":
                     awaiting = result
@@ -240,11 +279,13 @@ def stream_agent(
     session_id: str | None = None,
     thread_id: str | None = None,
     now: datetime | None = None,
+    trace_id: str | None = None,
 ):
     """流式执行一轮对话：文本增量输出，工具调用完整缓冲后执行。"""
     if max_steps < 1:
         raise ValueError("max_steps 必须至少为 1")
 
+    trace_id = trace_id or new_run_id()
     messages.append({"role": "user", "content": user_message})
 
     current_time = now if now is not None else datetime.now(UTC)
@@ -264,20 +305,41 @@ def stream_agent(
             user_message,
             client,
             now=now,
+            trace_id=trace_id,
         )
         messages.append({"role": "assistant", "content": answer})
         yield {"event": "token", "data": {"text": answer}}
         return
 
-    for _ in range(max_steps):
+    for step in range(max_steps):
+        emit_trace("model.start", run_id=trace_id, step=step, message_count=len(messages))
         streamed_parts: list[str] = []
         message = None
-        for kind, value in stream_model(client, messages, TOOLS):
-            if kind == "token":
-                streamed_parts.append(value)
-                yield {"event": "token", "data": {"text": value}}
-            elif kind == "message":
-                message = value
+        model_started = monotonic()
+        model_status = "ok"
+        try:
+            for kind, value in stream_model(client, messages, TOOLS):
+                if kind == "token":
+                    streamed_parts.append(value)
+                    yield {"event": "token", "data": {"text": value}}
+                elif kind == "message":
+                    message = value
+        except GeneratorExit:
+            model_status = "cancelled"
+            raise
+        except Exception:
+            model_status = "error"
+            raise
+        finally:
+            emit_trace(
+                "model.end",
+                run_id=trace_id,
+                step=step,
+                status=model_status,
+                duration_ms=round((monotonic() - model_started) * 1000, 2),
+                tool_call_count=len(message.tool_calls or []) if message else 0,
+                token_chars=sum(len(part) for part in streamed_parts),
+            )
 
         if message is None:
             raise RuntimeError("流式模型没有返回完整消息")
@@ -306,6 +368,7 @@ def stream_agent(
                     session_id=session_id,
                     thread_id=thread_id,
                     now=current_time,
+                    trace_id=trace_id,
                 )
                 if result.get("status") == "awaiting_confirmation":
                     awaiting = result
