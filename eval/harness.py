@@ -1,4 +1,4 @@
-"""最小评测执行器：脚本化模型 → 确认 → Oracle。"""
+"""最小评测执行器：脚本化模型 → 确认/拒绝 → Oracle。"""
 
 import json
 import os
@@ -47,6 +47,10 @@ def _tool_call_message(case: EvalCase) -> ChatCompletionMessage:
     )
 
 
+def _text_message(content: str) -> ChatCompletionMessage:
+    return ChatCompletionMessage(role="assistant", content=content)
+
+
 def _restore_env(name: str, value: str | None) -> None:
     if value is None:
         os.environ.pop(name, None)
@@ -58,8 +62,17 @@ def _elapsed_ms(started: float) -> float:
     return round((monotonic() - started) * 1000, 2)
 
 
+def _sanitize_pending(pending: dict | None) -> dict | None:
+    if not isinstance(pending, dict):
+        return None
+    return {
+        key: pending.get(key)
+        for key in ("tool", "order_id", "summary", "status", "expires_at")
+    }
+
+
 def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
-    """在独立数据库中执行一轮取消，并用 Oracle 判定最终状态。"""
+    """在独立数据库中执行一条用例，并用 Oracle 判定最终状态。"""
     started = monotonic()
     previous_model = os.environ.get("LLM_MODEL")
     previous_trace_enabled = os.environ.get("TRACE_ENABLED")
@@ -74,49 +87,66 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
             db_path = Path(temp_dir) / "retail.db"
             with isolated_database(db_path):
                 seed_case_order(case)
+
+                responses = [_tool_call_message(case)]
+                if case.expected["outcome"] == "rejected":
+                    responses.append(_text_message("当前订单状态不允许取消，本次未执行。"))
+                client = ScriptedClient(responses)
+
                 context = new_conversation(user_id=case.user_id)
-                client = ScriptedClient([_tool_call_message(case)])
                 response = send_message(
                     context=context,
                     message=case.user_message,
                     client=client,
                     now=FIXED_NOW,
                 )
-
                 pending = response.get("pending_action")
-                if pending is None:
+
+                if case.expected["outcome"] == "canceled":
+                    if pending is None:
+                        return {
+                            "case_id": case.case_id,
+                            "outcome": "canceled",
+                            "passed": False,
+                            "checks": [],
+                            "error": "未生成待确认操作",
+                            "reply": response.get("reply"),
+                            "duration_ms": _elapsed_ms(started),
+                        }
+
+                    decision = decide_confirmation(
+                        context=context,
+                        confirmation_id=pending["confirmation_id"],
+                        decision="approve",
+                        now=FIXED_NOW,
+                    )
+                    oracle_result = evaluate(db_path, case)
                     return {
                         "case_id": case.case_id,
-                        "passed": False,
-                        "checks": [],
-                        "error": "未生成待确认操作",
+                        "outcome": "canceled",
+                        "passed": oracle_result["passed"],
+                        "checks": oracle_result["checks"],
                         "reply": response.get("reply"),
+                        "pending_action": _sanitize_pending(pending),
+                        "decision_reply": decision.get("reply"),
+                        "decision_error": decision.get("error"),
                         "duration_ms": _elapsed_ms(started),
                     }
 
-                decision = decide_confirmation(
-                    context=context,
-                    confirmation_id=pending["confirmation_id"],
-                    decision="approve",
-                    now=FIXED_NOW,
-                )
                 oracle_result = evaluate(db_path, case)
-
                 return {
                     "case_id": case.case_id,
+                    "outcome": "rejected",
                     "passed": oracle_result["passed"],
                     "checks": oracle_result["checks"],
-                    "pending_action": {
-                        key: pending.get(key)
-                        for key in ("tool", "order_id", "summary", "status", "expires_at")
-                    },
-                    "decision_reply": decision.get("reply"),
-                    "decision_error": decision.get("error"),
+                    "reply": response.get("reply"),
+                    "pending_action": _sanitize_pending(pending),
                     "duration_ms": _elapsed_ms(started),
                 }
     except Exception as exc:
         return {
             "case_id": case.case_id,
+            "outcome": case.expected["outcome"],
             "passed": False,
             "checks": [],
             "error": f"{type(exc).__name__}: {exc}",

@@ -26,11 +26,14 @@ def isolated_database(db_path: Path) -> Iterator[None]:
 
 
 def seed_case_order(case: EvalCase) -> None:
-    """写入用例订单；固定时钟保证付款时间在 24 小时取消窗口内。"""
+    """写入用例订单；固定时钟保证付款和发货时间可重复。"""
     order = case.order
     paid_at = None
     if order["status"] != "unpaid":
         paid_at = (FIXED_NOW - timedelta(minutes=order["paid_minutes_ago"])).isoformat()
+    shipped_at = None
+    if order["status"] == "shipped":
+        shipped_at = (FIXED_NOW - timedelta(minutes=order["shipped_minutes_ago"])).isoformat()
 
     conn = database.get_connection()
     try:
@@ -38,8 +41,8 @@ def seed_case_order(case: EvalCase) -> None:
             conn.execute(
                 """
                 INSERT INTO orders (
-                    order_id, user_id, status, paid_amount_cents, paid_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    order_id, user_id, status, paid_amount_cents, paid_at, shipped_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order["order_id"],
@@ -47,6 +50,7 @@ def seed_case_order(case: EvalCase) -> None:
                     order["status"],
                     order["paid_amount_cents"],
                     paid_at,
+                    shipped_at,
                 ),
             )
     finally:
