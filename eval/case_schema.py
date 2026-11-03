@@ -1,4 +1,4 @@
-"""最小评测用例：从 JSONL 加载并校验取消成功和拒绝用例。"""
+"""最小评测用例：从 JSONL 加载并校验取消成功、拒绝和自然语言确认用例。"""
 
 import json
 from dataclasses import dataclass
@@ -7,6 +7,7 @@ from typing import Any
 
 DEFAULT_CASES_PATH = Path(__file__).with_name("dev_cases.jsonl")
 OUTCOMES = {"canceled", "rejected"}
+CONFIRMATION_MODES = {"explicit", "chat", "none"}
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class EvalCase:
     user_message: str
     order: dict[str, Any]
     tool_call: dict[str, Any]
+    confirmation: dict[str, Any]
     expected: dict[str, Any]
 
 
@@ -83,6 +85,43 @@ def _parse_case(data: dict) -> EvalCase:
         f"{case_id}: 工具参数 reason 不能为空",
     )
 
+    confirmation = data.get("confirmation", {"mode": "explicit", "decision": "approve"})
+    _require(isinstance(confirmation, dict), f"{case_id}: confirmation 必须是对象")
+    confirmation_mode = confirmation.get("mode", "explicit")
+    _require(
+        confirmation_mode in CONFIRMATION_MODES,
+        f"{case_id}: confirmation.mode 只支持 explicit、chat 或 none",
+    )
+    if confirmation_mode == "explicit":
+        decision = confirmation.get("decision", "approve")
+        _require(decision in {"approve", "reject"}, f"{case_id}: confirmation.decision 不合法")
+        normalized_confirmation = {"mode": "explicit", "decision": decision}
+    elif confirmation_mode == "chat":
+        confirmation_message = confirmation.get("message")
+        intent = confirmation.get("intent")
+        evidence = confirmation.get("evidence", confirmation_message)
+        _require(
+            isinstance(confirmation_message, str) and bool(confirmation_message.strip()),
+            f"{case_id}: confirmation.message 不能为空",
+        )
+        _require(intent in {"approve", "reject"}, f"{case_id}: confirmation.intent 不合法")
+        _require(
+            isinstance(evidence, str) and bool(evidence.strip()),
+            f"{case_id}: confirmation.evidence 不能为空",
+        )
+        _require(
+            evidence in confirmation_message,
+            f"{case_id}: confirmation.evidence 必须是 confirmation.message 的子串",
+        )
+        normalized_confirmation = {
+            "mode": "chat",
+            "message": confirmation_message,
+            "intent": intent,
+            "evidence": evidence,
+        }
+    else:
+        normalized_confirmation = {"mode": "none"}
+
     expected = data.get("expected")
     _require(isinstance(expected, dict), f"{case_id}: expected 必须是对象")
     outcome = expected.get("outcome")
@@ -111,8 +150,16 @@ def _parse_case(data: dict) -> EvalCase:
         f"{case_id}: expected.other_orders_canceled 必须是非负整数",
     )
 
+    confirmation_decision = (
+        normalized_confirmation.get("decision")
+        if confirmation_mode == "explicit"
+        else normalized_confirmation.get("intent")
+    )
+
     if outcome == "canceled":
         _require(order["status"] == "paid", f"{case_id}: 成功取消用例必须是已付款订单")
+        _require(confirmation_mode != "none", f"{case_id}: 成功取消必须有确认动作")
+        _require(confirmation_decision == "approve", f"{case_id}: 成功取消的确认意图必须是 approve")
         _require(expected["order_status"] == "canceled", f"{case_id}: 成功取消的最终状态必须是 canceled")
         _require(expected["refund_count"] == 1, f"{case_id}: 成功取消必须恰好生成一条退款")
         _require(expected["confirmation_count"] == 1, f"{case_id}: 成功取消必须恰好有一条确认记录")
@@ -151,6 +198,11 @@ def _parse_case(data: dict) -> EvalCase:
         _require(expected["refund_count"] == 0, f"{case_id}: 拒绝用例不能生成退款")
         _require(expected["confirmation_count"] == 0, f"{case_id}: 拒绝用例不能生成确认记录")
         _require(expected["operation_logs"] == 0, f"{case_id}: 拒绝用例不能写操作日志")
+        if confirmation_mode != "none":
+            _require(
+                confirmation_decision == "reject",
+                f"{case_id}: 拒绝用例的确认意图必须是 reject",
+            )
 
     normalized_expected = dict(expected)
     normalized_expected["other_orders_canceled"] = other_orders
@@ -161,6 +213,7 @@ def _parse_case(data: dict) -> EvalCase:
         user_message=user_message,
         order=order,
         tool_call=tool_call,
+        confirmation=normalized_confirmation,
         expected=normalized_expected,
     )
 

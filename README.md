@@ -409,10 +409,10 @@ Metrics / Reporter
 - Oracle 直接读 SQLite，不调用 Agent、不调用 LLM、不读取 Agent 自评。
 - 成功必须同时满足期望数据库状态和禁止副作用。
 
-当前实际落地的是两条取消用例：`cancel_paid_order` 验证成功取消，`cancel_shipped_order`
-验证已发货订单被拒绝且零写入；两条都使用隔离数据库、脚本化模型、显式确认和 Oracle 判定。
-下文的 40 条用例、A/B/C 对照和故障注入仍是目标设计，尚未实现。运行方式见
-[最小评测闭环](docs/eval_minimal.md)。
+当前实际落地的是三条取消用例：`cancel_paid_order` 验证显式确认成功，`cancel_shipped_order`
+验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm` 验证两轮对话中的自然语言确认；
+三条都使用隔离数据库、脚本化模型和 Oracle 判定。下文的 40 条用例、A/B/C 对照和故障注入
+仍是目标设计，尚未实现。运行方式见 [最小评测闭环](docs/eval_minimal.md)。
 - 冻结测试集不用于 Prompt 调参。
 
 ### 6.2 40 条冻结测试
@@ -721,11 +721,12 @@ pytest -m "not slow and not integration and not network"
 
 ### 9.7 运行评测
 
-当前已实现两条取消用例：成功取消和已发货拒绝（零写入）：
+当前已实现三条取消用例：显式确认成功、已发货拒绝（零写入）和自然语言确认：
 
 ```bash
 python -m eval.run_eval --case cancel_paid_order
 python -m eval.run_eval --case cancel_shipped_order
+python -m eval.run_eval --case cancel_paid_order_chat_confirm
 ```
 
 等价的安装后入口：
@@ -733,6 +734,7 @@ python -m eval.run_eval --case cancel_shipped_order
 ```bash
 retail-eval --case cancel_paid_order
 retail-eval --case cancel_shipped_order
+retail-eval --case cancel_paid_order_chat_confirm
 ```
 
 产物：

@@ -28,10 +28,31 @@ def test_cancel_paid_order_case_passes(tmp_path):
 
     assert result["passed"] is True, result
     assert result["outcome"] == "canceled"
+    assert result["confirmation_mode"] == "explicit"
     assert all(check["ok"] for check in result["checks"])
     assert result["pending_action"] is not None
     assert "confirmation_id" not in result["pending_action"]
     assert (tmp_path / "trace.jsonl").exists()
+
+
+def test_cancel_paid_order_chat_confirmation_passes(tmp_path):
+    case = load_case("cancel_paid_order_chat_confirm")
+
+    result = run_case(case, trace_path=tmp_path / "trace.jsonl")
+
+    assert result["passed"] is True, result
+    assert result["outcome"] == "canceled"
+    assert result["confirmation_mode"] == "chat"
+    assert result["pending_action"] is not None
+    assert result["remaining_pending_action"] is None
+    assert all(check["ok"] for check in result["checks"])
+
+    events = read_events(tmp_path / "trace.jsonl")
+    intents = [event for event in events if event["event"] == "confirmation.intent"]
+    decisions = [event for event in events if event["event"] == "confirmation.decision"]
+    assert intents[-1]["intent"] == "approve"
+    assert decisions[-1]["decision"] == "approve"
+    assert decisions[-1]["source"] == "chat"
 
 
 def test_cancel_shipped_order_rejection_case_passes(tmp_path):
@@ -41,6 +62,7 @@ def test_cancel_shipped_order_rejection_case_passes(tmp_path):
 
     assert result["passed"] is True, result
     assert result["outcome"] == "rejected"
+    assert result["confirmation_mode"] == "none"
     assert result["pending_action"] is None
     assert all(check["ok"] for check in result["checks"])
 
@@ -104,7 +126,14 @@ def test_oracle_fails_when_rejected_case_has_refund(tmp_path):
     assert "refund.count" in failed
 
 
-@pytest.mark.parametrize("case_id", ["cancel_paid_order", "cancel_shipped_order"])
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "cancel_paid_order",
+        "cancel_shipped_order",
+        "cancel_paid_order_chat_confirm",
+    ],
+)
 def test_cli_writes_result_and_trace(case_id, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
