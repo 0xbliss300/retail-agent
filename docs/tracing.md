@@ -24,7 +24,7 @@ data/traces.jsonl
 | `tool.call` | 工具执行边界 | `run_id`、`tool`、`ok`、`status`、`error`、`attempts`、`duration_ms` |
 | `confirmation.prepared` | 工具执行边界 | `run_id`、`tool`、`order_id`、`expires_at` |
 | `confirmation.intent` | 自然语言确认路径 | `run_id`、`tool`、`intent` |
-| `confirmation.decision` | 自然语言或显式确认 | `run_id`、`source`、`tool`、`decision`、`status`、`error` |
+| `confirmation.decision` | 自然语言或显式确认 | `run_id`、`source`、`tool`、`decision`、`status`、`error`；显式确认还带 `session_id`、`thread_id` |
 
 `agent.end.status` 可能是：
 

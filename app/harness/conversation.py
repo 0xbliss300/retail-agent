@@ -365,6 +365,8 @@ def decide_confirmation(
         "confirmation.decision",
         run_id=new_run_id(),
         source="explicit",
+        session_id=context["session_id"],
+        thread_id=context["thread_id"],
         tool=record["tool"],
         decision=decision,
         was_pending=was_pending,

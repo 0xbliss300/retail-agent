@@ -408,6 +408,10 @@ Metrics / Reporter
 - Fault Injection 可复现，并记录是否触发。
 - Oracle 直接读 SQLite，不调用 Agent、不调用 LLM、不读取 Agent 自评。
 - 成功必须同时满足期望数据库状态和禁止副作用。
+
+当前实际落地的是 `cancel_paid_order` 一条最小用例：隔离数据库、脚本化模型、显式确认和 Oracle 判定；
+下文的 40 条用例、A/B/C 对照和故障注入仍是目标设计，尚未实现。运行方式见
+[最小评测闭环](docs/eval_minimal.md)。
 - 冻结测试集不用于 Prompt 调参。
 
 ### 6.2 40 条冻结测试
@@ -716,29 +720,31 @@ pytest -m "not slow and not integration and not network"
 
 ### 9.7 运行评测
 
-开发集：
+当前已实现一条取消用例的最小闭环：
 
 ```bash
-python -m eval.run_eval --cases dev --baseline A,B,C --runs 1 --output reports/runs/dev
+python -m eval.run_eval --case cancel_paid_order
 ```
 
-冻结测试集：
+等价的安装后入口：
 
 ```bash
-python -m eval.run_eval --cases test --baseline A,B,C --runs 1 --publish
+retail-eval --case cancel_paid_order
 ```
 
-产物目录：
+产物：
 
 ```text
 reports/runs/<timestamp>/
-├── results.jsonl          # 每个 Case 的执行结果
-├── metrics.json           # 汇总指标
-├── baseline_comparison.md # A/B/C 对比
-└── bad_cases.md           # 失败案例与根因
+├── result.json   # 用例、Oracle 检查项和通过状态
+└── trace.jsonl   # 本轮 Agent 事件
 ```
 
-等价的入口是 `retail-eval` 命令。
+退出码 `0` 表示通过，`1` 表示 Oracle 失败，`2` 表示用例不存在。
+
+40 条冻结用例、A/B/C 对照、User Simulator、故障注入和指标汇总尚未实现。
+当前用例使用脚本化模型，只验证评测框架和 Oracle，不用于比较模型能力。
+详见 [最小评测闭环](docs/eval_minimal.md)。
 
 ### 9.8 运行演示脚本
 
