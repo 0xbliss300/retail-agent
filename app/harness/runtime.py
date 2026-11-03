@@ -16,6 +16,28 @@ def create_messages(system_prompt: str) -> list:
     return [{"role": "system", "content": system_prompt}]
 
 
+TOOL_FAILURE_ANSWERS = {
+    "TOOL_TIMEOUT": (
+        "本次工具调用超时，结果未确认。请稍后重试；"
+        "如果涉及取消或退款，请先查询订单和退款状态，不要重复提交。"
+    ),
+    "TOOL_BUSY": "当前数据库繁忙，本次操作未完成。请稍后重试。",
+    "TOOL_ERROR": "工具执行失败，本次操作未完成。请稍后重试。",
+}
+
+
+def _tool_failure_answer(result: dict) -> str | None:
+    """只处理工具执行边界错误；业务拒绝仍交给模型解释。"""
+    return TOOL_FAILURE_ANSWERS.get(result.get("error"))
+
+
+def _single_tool_failure_answer(tool_calls: list, tool_results: list) -> str | None:
+    """单个工具失败时直接给出确定性回复，避免模型编造成功结果。"""
+    if len(tool_calls) != 1 or len(tool_results) != 1:
+        return None
+    return _tool_failure_answer(tool_results[0])
+
+
 def _confirmation_answer(record: dict) -> str:
     if record.get("tool") == "cancel_order":
         return (
@@ -169,6 +191,7 @@ def run_agent(
             return message.content or "模型没有返回文本。"
 
         awaiting = None
+        tool_results = []
         for tool_call in message.tool_calls:
             if awaiting is not None:
                 # 给每个 tool_call 补齐结果，但不继续执行同一批的后续动作。
@@ -183,6 +206,7 @@ def run_agent(
                 )
                 if result.get("status") == "awaiting_confirmation":
                     awaiting = result
+            tool_results.append(result)
             messages.append(
                 {
                     "role": "tool",
@@ -195,6 +219,11 @@ def run_agent(
             answer = _confirmation_answer(awaiting)
             messages.append({"role": "assistant", "content": answer})
             return answer
+
+        failure_answer = _single_tool_failure_answer(message.tool_calls, tool_results)
+        if failure_answer is not None:
+            messages.append({"role": "assistant", "content": failure_answer})
+            return failure_answer
 
     answer = "已达到本次执行的步数上限，请稍后重试。"
     messages.append({"role": "assistant", "content": answer})
@@ -266,6 +295,7 @@ def stream_agent(
             return
 
         awaiting = None
+        tool_results = []
         for tool_call in message.tool_calls:
             if awaiting is not None:
                 result = {"ok": False, "error": "AWAITING_CONFIRMATION"}
@@ -279,6 +309,7 @@ def stream_agent(
                 )
                 if result.get("status") == "awaiting_confirmation":
                     awaiting = result
+            tool_results.append(result)
             messages.append(
                 {
                     "role": "tool",
@@ -291,6 +322,12 @@ def stream_agent(
             answer = _confirmation_answer(awaiting)
             messages.append({"role": "assistant", "content": answer})
             yield {"event": "token", "data": {"text": answer}}
+            return
+
+        failure_answer = _single_tool_failure_answer(message.tool_calls, tool_results)
+        if failure_answer is not None:
+            messages.append({"role": "assistant", "content": failure_answer})
+            yield {"event": "token", "data": {"text": failure_answer}}
             return
 
     answer = "已达到本次执行的步数上限，请稍后重试。"
