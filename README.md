@@ -409,11 +409,13 @@ Metrics / Reporter
 - Oracle 直接读 SQLite，不调用 Agent、不调用 LLM、不读取 Agent 自评。
 - 成功必须同时满足期望数据库状态和禁止副作用。
 
-当前实际落地的是三条取消用例：`cancel_paid_order` 验证显式确认成功，`cancel_shipped_order`
-验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm` 验证两轮对话中的自然语言确认；
-三条都使用隔离数据库、脚本化模型和 Oracle 判定。另有一条真实 LLM 冒烟路径 `--llm`，
-单次运行、不参与能力结论。下文的 40 条用例、A/B/C 对照和故障注入仍是目标设计，尚未实现。
-运行方式见 [最小评测闭环](docs/eval_minimal.md) 和 [真实 LLM 冒烟评测](docs/eval_llm.md)。
+当前实际落地的是三条脚本化取消用例：`cancel_paid_order` 验证显式确认成功，
+`cancel_shipped_order` 验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm`
+验证两轮对话中的自然语言确认；三条都使用隔离数据库、脚本化模型和 Oracle 判定。
+真实 LLM 侧另有 8 条用例，支持 `--llm --all --runs N`，输出 accuracy、pass@k、
+policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例、A/B/C 对照和
+故障注入仍是目标设计，尚未实现。运行方式见 [最小评测闭环](docs/eval_minimal.md) 和
+[真实 LLM 多用例评测](docs/eval_llm.md)。
 - 冻结测试集不用于 Prompt 调参。
 
 ### 6.2 40 条冻结测试
@@ -771,17 +773,20 @@ reports/runs/<timestamp>/
 
 退出码 `0` 表示全部通过，`1` 表示 Oracle 失败，`2` 表示用例不存在或用例文件不合法。
 
-真实 LLM 冒烟评测（需要 `.env` 配置，单次运行，不代表模型能力）：
+真实 LLM 多用例评测（8 条用例，需要 `.env` 配置，仍不是完整模型基准）：
 
 ```bash
 python -m eval.run_eval --llm --case llm_cancel_paid_order
+python -m eval.run_eval --llm --all --runs 3
 ```
 
-真实模型自己选择工具和确认意图；可能 PASS 也可能 FAIL。产物与脚本化单条运行相同，
-详见 [真实 LLM 冒烟评测](docs/eval_llm.md)。
+真实模型自己选择工具和确认意图；可能 PASS 也可能 FAIL。`--llm --all --runs 3` 会串行运行
+8 条用例各三次，输出 accuracy、pass@1、pass@3、policy_violation_rate 和 p50/p95 延迟，
+并生成每用例、每轮的 `result.json` 和 `trace.jsonl`。
+详见 [真实 LLM 多用例评测](docs/eval_llm.md)。
 
-40 条冻结用例、A/B/C 对照、User Simulator、故障注入和多次运行指标汇总尚未实现。
-当前脚本化用例只验证评测框架和 Oracle，不用于比较模型能力。
+40 条冻结用例、A/B/C 对照、User Simulator、故障注入、wrong_tool_rate、avg_tool_calls
+和 Token 成本尚未实现。当前脚本化用例只验证评测框架和 Oracle，不用于比较模型能力。
 详见 [最小评测闭环](docs/eval_minimal.md)。
 
 ### 9.8 运行演示脚本

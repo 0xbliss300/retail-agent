@@ -9,8 +9,9 @@ from time import monotonic
 
 from eval.case_schema import load_case, load_cases
 from eval.harness import run_case
-from eval.llm_case_schema import load_llm_case
+from eval.llm_case_schema import load_llm_case, load_llm_cases
 from eval.llm_harness import run_llm_case
+from eval.metrics import build_multi_case_summary, build_run_summary
 from eval.reporter import build_summary, write_summary
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -93,31 +94,148 @@ def _run_single(case_id: str, *, output_dir: Path) -> int:
     return 0 if result["passed"] else 1
 
 
-def _run_llm(case_id: str, *, output_dir: Path) -> int:
+def _create_llm_client():
+    try:
+        from app.agent.model_client import create_client
+
+        client = create_client()
+    except Exception as exc:
+        raise RuntimeError(f"无法创建模型客户端: {exc}") from exc
+    if not os.environ.get("LLM_MODEL"):
+        raise RuntimeError("缺少 LLM_MODEL 配置")
+    return client
+
+
+def _run_llm_once(case, run_dir: Path) -> dict:
+    client = _create_llm_client()
+    result = run_llm_case(case, client, trace_path=run_dir / "trace.jsonl")
+    _write_result(result, run_dir)
+    return result
+
+
+def _print_failed_checks(result: dict) -> None:
+    for check in result.get("checks", []):
+        if not check["ok"]:
+            print(
+                f"  [{check['name']}] {check['actual']!r} "
+                f"(expected {check['expected']!r})"
+            )
+    if result.get("error"):
+        print(f"  error: {result['error']}")
+
+
+def _execute_llm_runs(
+    case,
+    output_dir: Path,
+    runs: int,
+    *,
+    label: str | None = None,
+) -> tuple[list[dict] | None, int]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    for index in range(1, runs + 1):
+        run_dir = output_dir if runs == 1 else output_dir / f"run-{index:02d}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            result = _run_llm_once(case, run_dir)
+        except RuntimeError as exc:
+            prefix = f"{label} run {index}/{runs}" if label else f"run {index}/{runs}"
+            print(f"ERROR: {prefix}: {exc}")
+            return None, 2
+        results.append(result)
+
+        if runs > 1:
+            prefix = f"{label} run {index}/{runs}" if label else f"run {index}/{runs}"
+            print(f"{prefix}: {'PASS' if result['passed'] else 'FAIL'}")
+            if not result["passed"]:
+                _print_failed_checks(result)
+        elif label is not None:
+            print(f"{label}: {'PASS' if result['passed'] else 'FAIL'}")
+            if not result["passed"]:
+                _print_failed_checks(result)
+    return results, 0
+
+
+def _run_llm(case_id: str, *, output_dir: Path, runs: int = 1) -> int:
     try:
         case = load_llm_case(case_id)
     except ValueError as exc:
         print(f"ERROR: {exc}")
         return 2
 
+    results, code = _execute_llm_runs(case, output_dir, runs)
+    if results is None:
+        return code
+
+    if runs == 1:
+        result = results[0]
+        _print_result(result, detailed=True)
+        print(f"result: {output_dir / 'result.json'}")
+        print(f"trace:  {output_dir / 'trace.jsonl'}")
+        return 0 if result["passed"] else 1
+
+    summary = build_run_summary(results, model=os.environ.get("LLM_MODEL"))
+    summary_path = output_dir / "summary.json"
+    write_summary(summary, summary_path)
+    print(
+        f"summary: {summary['passed']}/{summary['runs']} passed "
+        f"({summary['success_rate'] * 100:.1f}%)"
+    )
+    print(f"avg_duration_ms: {summary['avg_duration_ms']}")
+    print(f"p50_latency_ms: {summary['p50_latency_ms']}")
+    print(f"p95_latency_ms: {summary['p95_latency_ms']}")
+    print(f"policy_violations: {summary['policy_violations']}")
+    print(f"result: {summary_path}")
+    return 0 if summary["failed"] == 0 else 1
+
+
+def _run_llm_all(*, output_dir: Path, runs: int = 1) -> int:
     try:
-        from app.agent.model_client import create_client
-
-        client = create_client()
-    except Exception as exc:
-        print(f"ERROR: 无法创建模型客户端: {exc}")
-        return 2
-    if not os.environ.get("LLM_MODEL"):
-        print("ERROR: 缺少 LLM_MODEL 配置")
+        cases = load_llm_cases()
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
         return 2
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    result = run_llm_case(case, client, trace_path=output_dir / "trace.jsonl")
-    result_path = _write_result(result, output_dir)
-    _print_result(result, detailed=True)
-    print(f"result: {result_path}")
-    print(f"trace:  {output_dir / 'trace.jsonl'}")
-    return 0 if result["passed"] else 1
+    case_summaries = []
+    for case in cases:
+        case_dir = output_dir / case.case_id
+        results, code = _execute_llm_runs(
+            case,
+            case_dir,
+            runs,
+            label=case.case_id,
+        )
+        if results is None:
+            return code
+        case_summary = build_run_summary(results, model=os.environ.get("LLM_MODEL"))
+        write_summary(case_summary, case_dir / "summary.json")
+        case_summaries.append(case_summary)
+        if runs > 1:
+            print(
+                f"{case.case_id}: "
+                f"{case_summary['passed']}/{case_summary['runs']} passed"
+            )
+
+    summary = build_multi_case_summary(
+        case_summaries,
+        model=os.environ.get("LLM_MODEL"),
+        runs_per_case=runs,
+    )
+    summary_path = output_dir / "summary.json"
+    write_summary(summary, summary_path)
+    print(
+        f"accuracy: {summary['accuracy'] * 100:.1f}% "
+        f"({summary['passed']}/{summary['total_runs']} runs)"
+    )
+    print(f"pass@1: {summary['pass@1'] * 100:.1f}%")
+    if runs > 1:
+        print(f"pass@{runs}: {summary['pass_at_k'] * 100:.1f}%")
+    print(f"policy_violation_rate: {summary['policy_violation_rate'] * 100:.1f}%")
+    print(f"avg_duration_ms: {summary['avg_duration_ms']}")
+    print(f"p50_latency_ms: {summary['p50_latency_ms']}")
+    print(f"p95_latency_ms: {summary['p95_latency_ms']}")
+    print(f"result: {summary_path}")
+    return 0 if summary["failed"] == 0 else 1
 
 
 def main() -> int:
@@ -139,15 +257,28 @@ def main() -> int:
         help="使用真实 LLM 运行 llm_cases.jsonl 中的冒烟用例",
     )
     parser.add_argument("--output", type=Path, default=None, help="结果目录")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="真实 LLM 重复运行次数，1-10",
+    )
     args = parser.parse_args()
+
+    if args.runs < 1 or args.runs > 10:
+        print("ERROR: --runs 必须在 1 到 10 之间")
+        return 2
+    if not args.llm and args.runs != 1:
+        print("ERROR: --runs 只用于 --llm")
+        return 2
 
     if args.llm:
         if args.all:
-            print("ERROR: --llm 暂不支持 --all")
-            return 2
+            output_dir = args.output or (_default_output_dir() / "llm-all")
+            return _run_llm_all(output_dir=output_dir, runs=args.runs)
         case_id = args.case or "llm_cancel_paid_order"
         output_dir = args.output or _default_llm_output_dir(case_id)
-        return _run_llm(case_id, output_dir=output_dir)
+        return _run_llm(case_id, output_dir=output_dir, runs=args.runs)
 
     output_dir = args.output or _default_output_dir()
     if args.all:

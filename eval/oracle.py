@@ -93,24 +93,25 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
                 _check(
                     "confirmation.status",
                     confirmation["status"] if confirmation is not None else None,
-                    expected["confirmation_status"],
+                    expected.get("confirmation_status"),
                 )
             )
-            saved_status = None
-            if confirmation is not None:
-                try:
-                    saved = json.loads(confirmation["result_json"])
-                except (TypeError, ValueError):
-                    saved = None
-                if isinstance(saved, dict):
-                    saved_status = saved.get("status")
-            checks.append(
-                _check(
-                    "confirmation.result_status",
-                    saved_status,
-                    expected["confirmation_result_status"],
+            if "confirmation_result_status" in expected:
+                saved_status = None
+                if confirmation is not None:
+                    try:
+                        saved = json.loads(confirmation["result_json"])
+                    except (TypeError, ValueError):
+                        saved = None
+                    if isinstance(saved, dict):
+                        saved_status = saved.get("status")
+                checks.append(
+                    _check(
+                        "confirmation.result_status",
+                        saved_status,
+                        expected["confirmation_result_status"],
+                    )
                 )
-            )
 
         logs = conn.execute(
             "SELECT * FROM operation_logs WHERE order_id = ? AND user_id = ?",
