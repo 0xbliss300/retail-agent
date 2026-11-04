@@ -1,4 +1,4 @@
-"""最小评测用例：从 JSONL 加载并校验取消、拒绝和退款申请用例。"""
+"""最小评测用例：从 JSONL 加载并校验取消、拒绝、退款申请和撤回用例。"""
 
 import json
 import re
@@ -8,8 +8,11 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CASES_PATH = Path(__file__).with_name("dev_cases.jsonl")
-OUTCOMES = {"canceled", "rejected", "refund_submitted"}
+OUTCOMES = {"canceled", "rejected", "refund_submitted", "refund_withdrawn"}
 CONFIRMATION_MODES = {"explicit", "chat", "none"}
+WRITE_TOOLS = {"cancel_order", "prepare_refund_confirmation", "withdraw_refund"}
+REASON_TOOLS = {"cancel_order", "prepare_refund_confirmation"}
+EXISTING_REFUND_STATUSES = {"pending", "withdrawn", "completed"}
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -22,6 +25,7 @@ class EvalCase:
     tool_call: dict[str, Any]
     confirmation: dict[str, Any]
     expected: dict[str, Any]
+    existing_refund: dict[str, Any] | None = None
 
 
 def _require(condition: bool, message: str) -> None:
@@ -56,13 +60,23 @@ def _parse_case(data: dict) -> EvalCase:
         f"{case_id}: order.order_id 不能为空",
     )
     _require(
-        order["status"] in {"paid", "shipped"},
-        f"{case_id}: order.status 只支持 paid 或 shipped",
+        order["status"] in {"unpaid", "paid", "shipped"},
+        f"{case_id}: order.status 只支持 unpaid、paid 或 shipped",
     )
     _require(
-        type(order["paid_amount_cents"]) is int and order["paid_amount_cents"] > 0,
-        f"{case_id}: order.paid_amount_cents 必须是正整数",
+        type(order["paid_amount_cents"]) is int and order["paid_amount_cents"] >= 0,
+        f"{case_id}: order.paid_amount_cents 必须是非负整数",
     )
+    if order["status"] == "unpaid":
+        _require(
+            order["paid_amount_cents"] == 0,
+            f"{case_id}: 未付款订单的实付金额必须为 0",
+        )
+    else:
+        _require(
+            order["paid_amount_cents"] > 0,
+            f"{case_id}: 已付款订单的实付金额必须是正整数",
+        )
     _require(
         type(order["paid_minutes_ago"]) is int and order["paid_minutes_ago"] >= 0,
         f"{case_id}: order.paid_minutes_ago 必须是非负整数",
@@ -82,8 +96,8 @@ def _parse_case(data: dict) -> EvalCase:
     _require(isinstance(tool_call, dict), f"{case_id}: tool_call 必须是对象")
     tool_name = tool_call.get("name")
     _require(
-        tool_name in {"cancel_order", "prepare_refund_confirmation"},
-        f"{case_id}: 工具只支持 cancel_order 或 prepare_refund_confirmation",
+        tool_name in WRITE_TOOLS,
+        f"{case_id}: 工具只支持 cancel_order、prepare_refund_confirmation 或 withdraw_refund",
     )
     arguments = tool_call.get("arguments")
     _require(isinstance(arguments, dict), f"{case_id}: tool_call.arguments 必须是对象")
@@ -91,10 +105,51 @@ def _parse_case(data: dict) -> EvalCase:
         arguments.get("order_id") == order["order_id"],
         f"{case_id}: 工具参数 order_id 与用例订单不一致",
     )
-    _require(
-        isinstance(arguments.get("reason"), str) and bool(arguments["reason"].strip()),
-        f"{case_id}: 工具参数 reason 不能为空",
-    )
+    if tool_name in REASON_TOOLS:
+        _require(
+            isinstance(arguments.get("reason"), str) and bool(arguments["reason"].strip()),
+            f"{case_id}: 工具参数 reason 不能为空",
+        )
+    else:
+        _require(
+            set(arguments) == {"order_id"},
+            f"{case_id}: withdraw_refund 只接受 order_id",
+        )
+
+    existing = data.get("existing_refund")
+    if existing is None:
+        normalized_existing = None
+    else:
+        _require(isinstance(existing, dict), f"{case_id}: existing_refund 必须是对象")
+        _require(
+            tool_name == "withdraw_refund",
+            f"{case_id}: 只有撤回用例可以预置退款申请",
+        )
+        _require(
+            order["status"] == "shipped",
+            f"{case_id}: 预置售后申请要求订单为已发货",
+        )
+        existing_status = existing.get("status", "pending")
+        _require(
+            existing_status in EXISTING_REFUND_STATUSES,
+            f"{case_id}: existing_refund.status 只支持 pending、withdrawn 或 completed",
+        )
+        existing_amount = existing.get("amount_cents", order["paid_amount_cents"])
+        _require(
+            type(existing_amount) is int and existing_amount == order["paid_amount_cents"],
+            f"{case_id}: 预置申请金额必须等于订单实付金额",
+        )
+        existing_reason = existing.get("reason", "商品破损")
+        _require(
+            isinstance(existing_reason, str) and bool(existing_reason.strip()),
+            f"{case_id}: existing_refund.reason 不能为空",
+        )
+        normalized_existing = {
+            "status": existing_status,
+            "kind": "after_sales",
+            "amount_cents": existing_amount,
+            "reason": existing_reason,
+        }
 
     confirmation = data.get("confirmation", {"mode": "explicit", "decision": "approve"})
     _require(isinstance(confirmation, dict), f"{case_id}: confirmation 必须是对象")
@@ -138,7 +193,7 @@ def _parse_case(data: dict) -> EvalCase:
     outcome = expected.get("outcome")
     _require(
         outcome in OUTCOMES,
-        f"{case_id}: expected.outcome 必须是 canceled、rejected 或 refund_submitted",
+        f"{case_id}: expected.outcome 必须是 canceled、rejected、refund_submitted 或 refund_withdrawn",
     )
     for key in ("order_status", "refund_count", "confirmation_count", "operation_logs"):
         _require(key in expected, f"{case_id}: expected 缺少 {key}")
@@ -171,39 +226,41 @@ def _parse_case(data: dict) -> EvalCase:
     )
 
     if outcome == "canceled":
-        _require(order["status"] == "paid", f"{case_id}: 成功取消用例必须是已付款订单")
+        _require(
+            order["status"] in {"unpaid", "paid"},
+            f"{case_id}: 成功取消用例必须是未付款或已付款订单",
+        )
         _require(confirmation_mode != "none", f"{case_id}: 成功取消必须有确认动作")
         _require(confirmation_decision == "approve", f"{case_id}: 成功取消的确认意图必须是 approve")
         _require(expected["order_status"] == "canceled", f"{case_id}: 成功取消的最终状态必须是 canceled")
-        _require(expected["refund_count"] == 1, f"{case_id}: 成功取消必须恰好生成一条退款")
         _require(expected["confirmation_count"] == 1, f"{case_id}: 成功取消必须恰好有一条确认记录")
         _require(expected["operation_logs"] == 1, f"{case_id}: 成功取消必须恰好有一条操作日志")
-        for key in (
-            "refund_kind",
-            "refund_amount_cents",
-            "refund_status",
-            "confirmation_status",
-            "confirmation_result_status",
-        ):
-            _require(key in expected, f"{case_id}: expected 缺少 {key}")
-        _require(expected["refund_kind"] == "cancellation", f"{case_id}: refund_kind 必须是 cancellation")
         _require(
-            type(expected["refund_amount_cents"]) is int and expected["refund_amount_cents"] >= 0,
-            f"{case_id}: expected.refund_amount_cents 必须是非负整数",
+            expected.get("confirmation_status") == "consumed",
+            f"{case_id}: 成功取消的确认必须已消费",
         )
         _require(
-            isinstance(expected["refund_status"], str) and bool(expected["refund_status"]),
-            f"{case_id}: expected.refund_status 不能为空",
+            expected.get("confirmation_result_status") == "canceled",
+            f"{case_id}: 成功取消的确认结果必须是 canceled",
         )
-        _require(
-            isinstance(expected["confirmation_status"], str) and bool(expected["confirmation_status"]),
-            f"{case_id}: expected.confirmation_status 不能为空",
-        )
-        _require(
-            isinstance(expected["confirmation_result_status"], str)
-            and bool(expected["confirmation_result_status"]),
-            f"{case_id}: expected.confirmation_result_status 不能为空",
-        )
+        if order["status"] == "unpaid":
+            _require(
+                expected["refund_count"] == 0,
+                f"{case_id}: 未付款订单取消不生成退款流水",
+            )
+        else:
+            _require(expected["refund_count"] == 1, f"{case_id}: 成功取消必须恰好生成一条退款")
+            for key in ("refund_kind", "refund_amount_cents", "refund_status"):
+                _require(key in expected, f"{case_id}: expected 缺少 {key}")
+            _require(expected["refund_kind"] == "cancellation", f"{case_id}: refund_kind 必须是 cancellation")
+            _require(
+                type(expected["refund_amount_cents"]) is int and expected["refund_amount_cents"] >= 0,
+                f"{case_id}: expected.refund_amount_cents 必须是非负整数",
+            )
+            _require(
+                isinstance(expected["refund_status"], str) and bool(expected["refund_status"]),
+                f"{case_id}: expected.refund_status 不能为空",
+            )
     elif outcome == "refund_submitted":
         _require(
             tool_name == "prepare_refund_confirmation",
@@ -247,12 +304,79 @@ def _parse_case(data: dict) -> EvalCase:
             expected["confirmation_result_status"] == "submitted",
             f"{case_id}: 确认结果必须是 submitted",
         )
+    elif outcome == "refund_withdrawn":
+        _require(
+            tool_name == "withdraw_refund",
+            f"{case_id}: 撤回用例必须使用 withdraw_refund",
+        )
+        _require(
+            normalized_existing is not None,
+            f"{case_id}: 撤回用例必须预置一条退款申请",
+        )
+        _require(
+            normalized_existing["status"] == "pending",
+            f"{case_id}: 只有 pending 申请可以撤回",
+        )
+        _require(confirmation_mode != "none", f"{case_id}: 撤回必须有确认动作")
+        _require(
+            confirmation_decision == "approve",
+            f"{case_id}: 撤回的确认意图必须是 approve",
+        )
+        _require(
+            expected["order_status"] == order["status"],
+            f"{case_id}: 撤回不应改变订单状态",
+        )
+        _require(expected["refund_count"] == 1, f"{case_id}: 撤回后仍需保留原申请")
+        _require(
+            expected.get("refund_kind") == "after_sales",
+            f"{case_id}: 撤回用例的 refund_kind 必须是 after_sales",
+        )
+        _require(
+            expected.get("refund_status") == "withdrawn",
+            f"{case_id}: 撤回后申请状态必须是 withdrawn",
+        )
+        _require(
+            expected.get("refund_amount_cents") == order["paid_amount_cents"],
+            f"{case_id}: 撤回不应改变申请金额",
+        )
+        _require(expected["confirmation_count"] == 1, f"{case_id}: 撤回必须恰好有一条确认记录")
+        _require(
+            expected.get("confirmation_status") == "consumed",
+            f"{case_id}: 撤回确认必须已消费",
+        )
+        _require(
+            expected.get("confirmation_result_status") == "withdrawn",
+            f"{case_id}: 确认结果必须是 withdrawn",
+        )
+        _require(
+            expected.get("confirmation_tool", "cancel_refund") == "cancel_refund",
+            f"{case_id}: 撤回确认记录的工具必须是 cancel_refund",
+        )
+        _require(expected["operation_logs"] == 0, f"{case_id}: 撤回不应写取消日志")
     else:
         _require(
             expected["order_status"] == order["status"],
             f"{case_id}: 拒绝用例的最终状态应与初始订单状态一致",
         )
-        _require(expected["refund_count"] == 0, f"{case_id}: 拒绝用例不能生成退款")
+        if normalized_existing is None:
+            _require(expected["refund_count"] == 0, f"{case_id}: 拒绝用例不能生成退款")
+        else:
+            _require(
+                expected["refund_count"] == 1,
+                f"{case_id}: 预置申请在拒绝后必须原样保留",
+            )
+            _require(
+                expected.get("refund_kind") == "after_sales",
+                f"{case_id}: 预置申请的 refund_kind 必须是 after_sales",
+            )
+            _require(
+                expected.get("refund_status") == normalized_existing["status"],
+                f"{case_id}: 拒绝后申请状态不应改变",
+            )
+            _require(
+                expected.get("refund_amount_cents") == normalized_existing["amount_cents"],
+                f"{case_id}: 拒绝后申请金额不应改变",
+            )
         _require(expected["operation_logs"] == 0, f"{case_id}: 拒绝用例不能写操作日志")
         if confirmation_mode == "none":
             _require(
@@ -284,6 +408,7 @@ def _parse_case(data: dict) -> EvalCase:
         tool_call=tool_call,
         confirmation=normalized_confirmation,
         expected=normalized_expected,
+        existing_refund=normalized_existing,
     )
 
 

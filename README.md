@@ -260,10 +260,15 @@ refund_requests.status = completed
 | 扩展工具 | 输入 | 输出 | 副作用 |
 |---|---|---|---|
 | `list_orders` | 可选 `limit`（默认10，1～50）、`offset`（默认0，非负整数） | 本人订单列表、是否还有下一页及下一页位置 | 无 |
+| `list_refunds` | 可选 `status`、`limit`、`offset` | 本人售后申请列表、订单状态、是否还有下一页 | 无 |
 
 当前已支持“列出我的订单 → 选择订单 → 查询详情”的聊天链路，详见 [本人订单查询](docs/my_orders.md)。
 模型不能传入 `user_id`；订单身份范围由运行时注入并在 SQL 中过滤。
 列表按订单号升序分页，不表示按下单时间排序，也不返回本人订单总数。
+
+`list_refunds` 支持“我有几笔退款在处理”这类不需要订单号的问题，返回本人售后申请、
+金额、状态与订单当前状态，可按状态筛选并分页；不包含取消订单产生的退款流水。
+排序、状态取值与数据验收见 [本人退款申请列表](docs/my_refunds.md)。
 已有 `get_order` 继续返回本人订单基本详情；表中规划的最近退款摘要尚未合并到该返回值，
 当前可通过 `get_refund_status` 独立查询退款进度。
 
@@ -417,11 +422,18 @@ Metrics / Reporter
 - Oracle 直接读 SQLite，不调用 Agent、不调用 LLM、不读取 Agent 自评。
 - 成功必须同时满足期望数据库状态和禁止副作用。
 
-当前实际落地的是五条脚本化用例：`cancel_paid_order` 验证显式确认成功，
-`cancel_shipped_order` 验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm`
-验证两轮对话中的自然语言确认，`refund_shipped_order_chat_confirm` 验证退款申请确认后
-生成 `pending` 售后申请且订单状态不变，`refund_shipped_order_reject` 验证用户拒绝后
-不创建退款申请；五条都使用隔离数据库、脚本化模型和 Oracle 判定。
+当前实际落地的是 14 条脚本化用例，分三组：
+
+- 取消 6 条：`cancel_paid_order` 验证显式确认成功，`cancel_unpaid_order` 验证未付款取消不生成退款流水，
+  `cancel_shipped_order` 验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm` 验证两轮对话中的
+  自然语言确认，`cancel_paid_order_reject` 验证用户拒绝，`cancel_over_24h_window` 验证超过 24 小时被拒；
+- 退款申请 5 条：`refund_shipped_order_chat_confirm` 与 `refund_explicit_confirm` 分别验证聊天和显式确认，
+  `refund_shipped_order_reject` 验证用户拒绝，`refund_paid_order_denied` 验证未发货不能申请，
+  `refund_out_of_window` 验证超过 7 天被拒；
+- 撤回 3 条：`withdraw_pending_refund` 验证确认后申请变为 `withdrawn`、订单不变，
+  `withdraw_without_refund` 与 `withdraw_already_withdrawn` 验证没有可撤回申请时零写入。
+
+全部用例使用隔离数据库、脚本化模型和 Oracle 判定。
 真实 LLM 侧另有 10 条用例，支持 `--llm --all --runs N`，输出 accuracy、pass@k、
 policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例、A/B/C 对照和
 故障注入仍是目标设计，尚未实现。运行方式见 [最小评测闭环](docs/eval_minimal.md) 和
@@ -734,24 +746,21 @@ pytest -m "not slow and not integration and not network"
 
 ### 9.7 运行评测
 
-当前已实现五条脚本化用例：取消成功、已发货拒绝（零写入）、自然语言确认取消、自然语言确认退款申请和用户拒绝退款申请：
+当前已实现 14 条脚本化用例，覆盖取消 6 条、退款申请 5 条、撤回 3 条。
+单条运行：
 
 ```bash
 python -m eval.run_eval --case cancel_paid_order
-python -m eval.run_eval --case cancel_shipped_order
-python -m eval.run_eval --case cancel_paid_order_chat_confirm
-python -m eval.run_eval --case refund_shipped_order_chat_confirm
-python -m eval.run_eval --case refund_shipped_order_reject
+python -m eval.run_eval --case refund_out_of_window
+python -m eval.run_eval --case withdraw_pending_refund
 ```
 
 等价的安装后入口：
 
 ```bash
 retail-eval --case cancel_paid_order
-retail-eval --case cancel_shipped_order
-retail-eval --case cancel_paid_order_chat_confirm
-retail-eval --case refund_shipped_order_chat_confirm
-retail-eval --case refund_shipped_order_reject
+retail-eval --case refund_out_of_window
+retail-eval --case withdraw_pending_refund
 ```
 
 批量运行全部用例：
@@ -777,16 +786,8 @@ reports/runs/<timestamp>/
 ├── cancel_paid_order/
 │   ├── result.json
 │   └── trace.jsonl
-├── cancel_shipped_order/
-│   ├── result.json
-│   └── trace.jsonl
-├── cancel_paid_order_chat_confirm/
-│   ├── result.json
-│   └── trace.jsonl
-├── refund_shipped_order_chat_confirm/
-│   ├── result.json
-│   └── trace.jsonl
-└── refund_shipped_order_reject/
+├── ...
+└── withdraw_already_withdrawn/
     ├── result.json
     └── trace.jsonl
 ```

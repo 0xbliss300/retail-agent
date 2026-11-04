@@ -111,7 +111,7 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
 
                 responses = [_tool_call_message(case)]
                 if mode == "none":
-                    responses.append(_text_message("当前订单状态不允许取消，本次未执行。"))
+                    responses.append(_text_message("该操作当前无法执行，本次未修改任何数据。"))
                 elif mode == "chat":
                     responses.append(
                         _intent_message(

@@ -122,6 +122,14 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
                     expected.get("confirmation_status"),
                 )
             )
+            if "confirmation_tool" in expected:
+                checks.append(
+                    _check(
+                        "confirmation.tool",
+                        confirmation["tool"] if confirmation is not None else None,
+                        expected["confirmation_tool"],
+                    )
+                )
             if "confirmation_result_status" in expected:
                 saved_status = None
                 if confirmation is not None:
@@ -164,7 +172,7 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
                 _check(
                     "operation_logs.amount_cents",
                     log["amount_cents"] if log is not None else None,
-                    expected["refund_amount_cents"],
+                    expected.get("refund_amount_cents", 0),
                 )
             )
 

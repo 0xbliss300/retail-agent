@@ -2,12 +2,13 @@
 
 import json
 import sys
+from dataclasses import replace
 
 import pytest
 
 from app.storage import database
 from eval import run_eval
-from eval.case_schema import load_case
+from eval.case_schema import DEFAULT_CASES_PATH, load_case, load_cases
 from eval.fixtures import FIXED_NOW, isolated_database, seed_case_order
 from eval.harness import run_case
 from eval.oracle import evaluate
@@ -271,13 +272,8 @@ def test_cli_all_runs_every_case(tmp_path, monkeypatch, capsys):
         "argv",
         ["retail-eval", "--all", "--output", str(tmp_path)],
     )
-    case_ids = {
-        "cancel_paid_order",
-        "cancel_shipped_order",
-        "cancel_paid_order_chat_confirm",
-        "refund_shipped_order_chat_confirm",
-        "refund_shipped_order_reject",
-    }
+    # 用例数量随开发集增长，断言从文件读取，避免每加一条用例就改测试。
+    case_ids = {case.case_id for case in load_cases()}
 
     exit_code = run_eval.main()
 
@@ -287,11 +283,12 @@ def test_cli_all_runs_every_case(tmp_path, monkeypatch, capsys):
         assert f"PASS {case_id}" in output
         assert (tmp_path / case_id / "result.json").exists()
         assert (tmp_path / case_id / "trace.jsonl").exists()
-    assert "summary: 5/5 passed" in output
+    total = len(case_ids)
+    assert f"summary: {total}/{total} passed" in output
 
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["total"] == 5
-    assert summary["passed"] == 5
+    assert summary["total"] == total
+    assert summary["passed"] == total
     assert summary["failed"] == 0
     assert summary["duration_ms"] >= 0
     assert {case["case_id"] for case in summary["cases"]} == case_ids
@@ -331,3 +328,108 @@ def test_summary_counts_failures():
     assert summary["duration_ms"] == 31.23
     assert summary["cases"][1]["failed_checks"] == ["order.status"]
     assert summary["cases"][1]["error"] == "执行失败"
+
+
+def test_withdraw_pending_refund_passes(tmp_path):
+    case = load_case("withdraw_pending_refund")
+
+    result = run_case(case, trace_path=tmp_path / "trace.jsonl")
+
+    assert result["passed"] is True, result
+    assert result["checks"]
+    assert all(check["ok"] for check in result["checks"])
+
+
+def test_withdraw_already_withdrawn_rejected_without_writing():
+    case = load_case("withdraw_already_withdrawn")
+
+    result = run_case(case)
+
+    assert result["passed"] is True, result
+    checks = {check["name"]: check for check in result["checks"]}
+    assert checks["refund.after_sales_count"]["actual"] == 1
+    assert checks["refund.status"]["actual"] == "withdrawn"
+    assert checks["confirmation.count"]["actual"] == 0
+
+
+def test_oracle_detects_wrong_withdraw_expectation():
+    """把期望状态改错后必须失败，证明 Oracle 不是只复述 Agent 的回复。"""
+    case = load_case("withdraw_pending_refund")
+    broken = replace(case, expected={**case.expected, "refund_status": "pending"})
+
+    result = run_case(broken)
+
+    assert result["passed"] is False
+    failed = {
+        check["name"] for check in result["checks"] if not check["ok"]
+    }
+    assert "refund.status" in failed
+
+
+def test_oracle_detects_wrong_order_status_expectation():
+    case = load_case("withdraw_pending_refund")
+    broken = replace(case, expected={**case.expected, "order_status": "refunded"})
+
+    result = run_case(broken)
+
+    assert result["passed"] is False
+    failed = {
+        check["name"] for check in result["checks"] if not check["ok"]
+    }
+    assert "order.status" in failed
+
+
+def _write_single_case(tmp_path, case_id: str, mutate) -> object:
+    """把开发集中的一条用例改坏后写入临时文件，返回路径。"""
+    for line in DEFAULT_CASES_PATH.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        data = json.loads(line)
+        if data.get("case_id") == case_id:
+            mutate(data)
+            path = tmp_path / "cases.jsonl"
+            path.write_text(
+                json.dumps(data, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+            return path
+    raise AssertionError(f"开发集没有用例 {case_id}")
+
+
+def test_schema_rejects_reason_on_withdraw(tmp_path):
+    path = _write_single_case(
+        tmp_path,
+        "withdraw_pending_refund",
+        lambda data: data["tool_call"]["arguments"].update({"reason": "不想要了"}),
+    )
+
+    with pytest.raises(ValueError, match="withdraw_refund 只接受 order_id"):
+        load_case("withdraw_pending_refund", path)
+
+
+def test_schema_rejects_existing_refund_on_cancel(tmp_path):
+    def mutate(data):
+        data["case_id"] = "cancel_with_existing"
+        data["tool_call"] = {
+            "name": "cancel_order",
+            "arguments": {
+                "order_id": data["order"]["order_id"],
+                "reason": "不想要了",
+            },
+        }
+        data["existing_refund"] = {"status": "pending"}
+
+    path = _write_single_case(tmp_path, "withdraw_pending_refund", mutate)
+
+    with pytest.raises(ValueError, match="只有撤回用例可以预置退款申请"):
+        load_case("cancel_with_existing", path)
+
+
+def test_schema_rejects_unpaid_with_positive_amount(tmp_path):
+    path = _write_single_case(
+        tmp_path,
+        "cancel_unpaid_order",
+        lambda data: data["order"].update({"paid_amount_cents": 9900}),
+    )
+
+    with pytest.raises(ValueError, match="未付款订单的实付金额必须为 0"):
+        load_case("cancel_unpaid_order", path)

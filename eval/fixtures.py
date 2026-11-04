@@ -56,5 +56,37 @@ def seed_order(*, user_id: str, order: dict) -> None:
         conn.close()
 
 
+def seed_existing_refund(case: EvalCase) -> None:
+    """播种用例预置的售后申请；时间与金额由固定时钟和订单决定。"""
+    refund = case.existing_refund
+    if refund is None:
+        return
+    conn = database.get_connection()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO refund_requests (
+                    refund_id, order_id, user_id, kind, amount_cents, reason,
+                    status, idempotency_key, confirmation_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 'after_sales', ?, ?, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    f"rf_{case.case_id}",
+                    case.order["order_id"],
+                    case.user_id,
+                    refund["amount_cents"],
+                    refund["reason"],
+                    refund["status"],
+                    FIXED_NOW.isoformat(),
+                    FIXED_NOW.isoformat(),
+                ),
+            )
+    finally:
+        conn.close()
+
+
 def seed_case_order(case: EvalCase) -> None:
     seed_order(user_id=case.user_id, order=case.order)
+    seed_existing_refund(case)
