@@ -23,6 +23,7 @@ from app.business.repository import (
     get_refund_settlement,
     insert_refund_request,
     insert_refund_settlement,
+    list_refunds_for_user,
     refund_order_in_transaction,
     withdraw_refund_in_transaction,
 )
@@ -66,6 +67,49 @@ def list_orders(*, user_id: str, limit: int = 10, offset: int = 0) -> dict:
     return {
         "ok": True,
         "orders": rows[:limit],
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + limit if has_more else None,
+    }
+
+
+REFUND_STATUSES = frozenset({
+    "pending", "approved", "rejected", "completed", "failed", "withdrawn",
+})
+
+
+def list_refunds(
+    *,
+    user_id: str,
+    status: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+) -> dict:
+    """分页查询本人售后申请；多读一条判断是否还有下一页。"""
+    if not isinstance(user_id, str) or not user_id.strip():
+        return {"ok": False, "error": "MISSING_CONTEXT"}
+    if status is not None and (
+        not isinstance(status, str) or status not in REFUND_STATUSES
+    ):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    if (
+        type(limit) is not int or not 1 <= limit <= 50
+        or type(offset) is not int or not 0 <= offset <= 2**63 - 1
+    ):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+
+    rows = list_refunds_for_user(
+        user_id=user_id,
+        status=status,
+        limit=limit + 1,
+        offset=offset,
+    )
+    has_more = len(rows) > limit
+    return {
+        "ok": True,
+        "refunds": rows[:limit],
+        "status": status,
         "limit": limit,
         "offset": offset,
         "has_more": has_more,

@@ -2,6 +2,7 @@
 
 READ_ONLY_TOOLS = frozenset({
     "list_orders",
+    "list_refunds",
     "get_logistics",
     "get_order",
     "get_policy",

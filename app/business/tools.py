@@ -54,6 +54,43 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_refunds",
+            "description": (
+                "分页查询当前用户本人的售后退款申请，不需要订单号。"
+                "返回申请编号、订单号、金额、状态、原因和申请时间；"
+                "has_more和next_offset指示下一页。"
+                "不包含取消订单产生的退款流水，仅查询，不修改任何状态。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending", "withdrawn", "completed", "rejected",
+                            "approved", "failed",
+                        ],
+                        "description": (
+                            "可选，按申请状态筛选。pending待处理，withdrawn已撤回，"
+                            "completed已完成，rejected已拒绝。不传表示全部状态。"
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer", "minimum": 1, "maximum": 50,
+                        "description": "每页条数，默认10，最多50。",
+                    },
+                    "offset": {
+                        "type": "integer", "minimum": 0, "maximum": 9223372036854775807,
+                        "description": "跳过的本人申请数，默认0；下一页使用next_offset。",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_logistics",
             "description": (
                 "查询当前用户指定订单的本地模拟物流，包括承运商、运单号和按时间排序的轨迹。"
@@ -200,6 +237,21 @@ TOOLS = [
 
 def list_orders(user_id: str, *, limit: int = 10, offset: int = 0) -> dict:
     return service.list_orders(user_id=user_id, limit=limit, offset=offset)
+
+
+def list_refunds(
+    user_id: str,
+    *,
+    status: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+) -> dict:
+    return service.list_refunds(
+        user_id=user_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def get_logistics(user_id: str, order_id: str) -> dict:

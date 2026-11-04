@@ -83,6 +83,39 @@ def get_logistics_for_user(*, user_id: str, order_id: str) -> dict | None:
         conn.close()
 
 
+def list_refunds_for_user(
+    *,
+    user_id: str,
+    status: str | None,
+    limit: int,
+    offset: int,
+) -> list[dict]:
+    """按可信用户列出售后申请；只读，不含取消产生的退款流水。"""
+    sql = """
+        SELECT r.refund_id, r.order_id, r.amount_cents, r.status, r.reason,
+               r.created_at, r.updated_at, o.status AS order_status
+        FROM refund_requests AS r
+        JOIN orders AS o
+          ON o.order_id = r.order_id
+         AND o.user_id = r.user_id
+        WHERE r.user_id = ?
+          AND r.kind = 'after_sales'
+    """
+    params: list = [user_id]
+    if status is not None:
+        sql += " AND r.status = ?"
+        params.append(status)
+    sql += " ORDER BY r.created_at DESC, r.rowid DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def get_active_refund(
     *,
     user_id: str,
