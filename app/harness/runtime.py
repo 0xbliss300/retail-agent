@@ -12,6 +12,11 @@ from app.business.service import (
     approve_withdraw_confirmation,
 )
 from app.business.tools import TOOLS
+from app.harness.budget import (
+    TIME_BUDGET_ANSWER,
+    TOOL_BUDGET_ANSWER,
+    ExecutionBudget,
+)
 from app.harness.confirmation import load_active_confirmation, reject_confirmation
 from app.harness.context import trim_messages
 from app.harness.tool_executor import execute_tool
@@ -219,10 +224,12 @@ def run_agent(
     thread_id: str | None = None,
     now: datetime | None = None,
     trace_id: str | None = None,
+    budget: ExecutionBudget | None = None,
 ) -> str:
     """处理一条用户消息，并将本轮对话追加到已有历史。"""
     if max_steps < 1:
         raise ValueError("max_steps 必须至少为 1")
+    budget = budget or ExecutionBudget()
 
     trace_id = trace_id or new_run_id()
     messages.append({"role": "user", "content": user_message})
@@ -250,6 +257,18 @@ def run_agent(
         return answer
 
     for step in range(max_steps):
+        if budget.expired():
+            answer = TIME_BUDGET_ANSWER
+            emit_trace(
+                "budget.exceeded",
+                run_id=trace_id,
+                step=step,
+                kind="duration",
+                **budget.snapshot(),
+            )
+            messages.append({"role": "assistant", "content": answer})
+            return answer
+
         emit_trace("model.start", run_id=trace_id, step=step, message_count=len(messages))
         model_started = monotonic()
         model_status = "ok"
@@ -283,11 +302,17 @@ def run_agent(
 
         awaiting = None
         tool_results = []
+        exhausted = False
         for tool_call in message.tool_calls:
             if awaiting is not None:
                 # 给每个 tool_call 补齐结果，但不继续执行同一批的后续动作。
                 result = {"ok": False, "error": "AWAITING_CONFIRMATION"}
+            elif not budget.has_tool_quota():
+                # 超预算也要补齐结果，否则消息序列不合法，下一轮直接 400。
+                result = {"ok": False, "error": "BUDGET_EXCEEDED"}
+                exhausted = True
             else:
+                budget.consume_tool()
                 result = execute_tool(
                     tool_call,
                     user_id,
@@ -312,6 +337,18 @@ def run_agent(
             messages.append({"role": "assistant", "content": answer})
             return answer
 
+        if exhausted:
+            answer = TOOL_BUDGET_ANSWER
+            emit_trace(
+                "budget.exceeded",
+                run_id=trace_id,
+                step=step,
+                kind="tool_calls",
+                **budget.snapshot(),
+            )
+            messages.append({"role": "assistant", "content": answer})
+            return answer
+
         failure_answer = _single_tool_failure_answer(message.tool_calls, tool_results)
         if failure_answer is not None:
             messages.append({"role": "assistant", "content": failure_answer})
@@ -333,10 +370,12 @@ def stream_agent(
     thread_id: str | None = None,
     now: datetime | None = None,
     trace_id: str | None = None,
+    budget: ExecutionBudget | None = None,
 ):
     """流式执行一轮对话：文本增量输出，工具调用完整缓冲后执行。"""
     if max_steps < 1:
         raise ValueError("max_steps 必须至少为 1")
+    budget = budget or ExecutionBudget()
 
     trace_id = trace_id or new_run_id()
     messages.append({"role": "user", "content": user_message})
@@ -365,6 +404,19 @@ def stream_agent(
         return
 
     for step in range(max_steps):
+        if budget.expired():
+            answer = TIME_BUDGET_ANSWER
+            emit_trace(
+                "budget.exceeded",
+                run_id=trace_id,
+                step=step,
+                kind="duration",
+                **budget.snapshot(),
+            )
+            messages.append({"role": "assistant", "content": answer})
+            yield {"event": "token", "data": {"text": answer}}
+            return
+
         emit_trace("model.start", run_id=trace_id, step=step, message_count=len(messages))
         streamed_parts: list[str] = []
         message = None
@@ -419,10 +471,15 @@ def stream_agent(
 
         awaiting = None
         tool_results = []
+        exhausted = False
         for tool_call in message.tool_calls:
             if awaiting is not None:
                 result = {"ok": False, "error": "AWAITING_CONFIRMATION"}
+            elif not budget.has_tool_quota():
+                result = {"ok": False, "error": "BUDGET_EXCEEDED"}
+                exhausted = True
             else:
+                budget.consume_tool()
                 result = execute_tool(
                     tool_call,
                     user_id,
@@ -444,6 +501,19 @@ def stream_agent(
 
         if awaiting is not None:
             answer = _confirmation_answer(awaiting)
+            messages.append({"role": "assistant", "content": answer})
+            yield {"event": "token", "data": {"text": answer}}
+            return
+
+        if exhausted:
+            answer = TOOL_BUDGET_ANSWER
+            emit_trace(
+                "budget.exceeded",
+                run_id=trace_id,
+                step=step,
+                kind="tool_calls",
+                **budget.snapshot(),
+            )
             messages.append({"role": "assistant", "content": answer})
             yield {"event": "token", "data": {"text": answer}}
             return
