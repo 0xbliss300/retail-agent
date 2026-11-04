@@ -14,7 +14,15 @@ from app.harness.conversation import (
     send_message,
     stream_message,
 )
-from app.schemas import ChatRequest, ChatResponse, ConfirmRequest, HealthResponse
+from app.harness.recovery import describe_recovery
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    ConfirmRequest,
+    HealthResponse,
+    RecoverRequest,
+    RecoverResponse,
+)
 
 APP_VERSION = "0.1.0"
 DEMO_USER_ID = "USER-001"
@@ -163,6 +171,27 @@ def confirm(request: ConfirmRequest) -> ChatResponse:
         )
 
     return ChatResponse(**result)
+
+
+@app.post("/recover", response_model=RecoverResponse)
+def recover(request: RecoverRequest) -> RecoverResponse:
+    """断线后查询上一次高风险操作的真实结果；不调用模型、不写数据库。"""
+    result = describe_recovery(
+        user_id=DEMO_USER_ID,
+        session_id=request.session_id.strip(),
+        thread_id=request.thread_id.strip(),
+        now=datetime.now(UTC),
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": result.get("error", "INVALID_ARGUMENTS"),
+                "message": "会话上下文不完整，无法查询。",
+            },
+        )
+    payload = {key: value for key, value in result.items() if key != "ok"}
+    return RecoverResponse(**payload)
 
 
 @app.post("/chat/stream")

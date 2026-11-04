@@ -44,3 +44,20 @@ class HealthResponse(BaseModel):
     status: str
     demo_user_id: str
     version: str
+
+
+class RecoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+
+
+class RecoverResponse(BaseModel):
+    state: Literal["executed", "awaiting_confirmation", "idle"]
+    last_state: str | None = None
+    tool: str | None = None
+    order_id: str | None = None
+    summary: str | None = None
+    expires_at: str | None = None
+    result: dict | None = None

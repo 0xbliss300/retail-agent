@@ -192,6 +192,29 @@ def insert_pending_confirmation(
     return True
 
 
+def get_latest_confirmation_for_context(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    session_id: str,
+    thread_id: str,
+) -> dict | None:
+    """读取该会话最近一条确认记录，不限状态；用于断线后查询结果。"""
+    row = conn.execute(
+        """
+        SELECT *
+        FROM confirmations
+        WHERE user_id = ?
+          AND session_id = ?
+          AND thread_id = ?
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+        """,
+        (user_id, session_id, thread_id),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def get_confirmation_for_context(
     conn: sqlite3.Connection,
     *,
@@ -216,8 +239,7 @@ def get_confirmation_for_context(
     return dict(row) if row is not None else None
 
 
-def get_active_confirmation_for_context(
-    conn: sqlite3.Connection,
+def get_active_confirmation_for_context(    conn: sqlite3.Connection,
     *,
     user_id: str,
     session_id: str,

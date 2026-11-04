@@ -4,12 +4,12 @@
 
 <p><strong>面向电商售后业务的可靠执行 Agent</strong></p>
 
-<p>用 LangGraph 编排工具调用，用 SQLite 保存真实业务状态，<br/>
+<p>用手写执行循环编排工具调用，用 SQLite 保存真实业务状态，<br/>
 用确认、幂等与恢复保证高风险写入安全，并以 A/B/C 受控对照实验量化服务端保护的实际收益。</p>
 
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white" />
-  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-1.x-1C3C3C" />
+  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-1.x%20%28planned%29-1C3C3C" />
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white" />
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white" />
   <img alt="License" src="https://img.shields.io/badge/License-TBD-lightgrey" />
@@ -89,7 +89,7 @@ AgentRuntime
   └── Tracer             模型、工具、确认、恢复事件
   │
   ▼
-LangGraph StateGraph
+Hand-written Execution Loop
   ├── Reason             模型理解与决策
   ├── Prepare            参数校验、业务预检
   ├── Confirm            高风险操作中断等待确认
@@ -106,8 +106,7 @@ Business Service
   │
   ▼
 SQLite
-  ├── retail.db          用户、订单、物流、退款、确认、幂等、日志
-  └── checkpoints.db     LangGraph Checkpointer
+  └── retail.db          用户、订单、物流、退款、确认、对话快照
 ```
 
 ### 2.1 分层职责
@@ -128,6 +127,10 @@ Oracle     负责“最终数据库状态是否正确”
 - 模型无法决定“自己是谁”。`user_id`、确认凭证、幂等键由运行时注入，模型传入会被拒绝。
 - 评测不读取 Agent 的回复内容作为成功依据。回复只是给人看的产物，判定看数据库。
 
+当前执行循环是手写的（`app/harness/runtime.py`），**没有使用 LangGraph**。
+`app/agent/graph.py`、`nodes.py`、`state.py` 是空的预留文件：接入 LangGraph 时，
+确认中断、执行预算与上下文裁剪都需要重新适配，属于后续独立改动。
+
 ### 2.2 一次写操作的完整路径
 
 ```text
@@ -143,7 +146,7 @@ Schema 校验 ────────── 参数不合法 → 返回结构化
 创建待确认操作 ─────── 绑定用户、会话、线程、订单、参数指纹、过期时间
   │
   ▼
-LangGraph 中断 ─────── 等待用户决定
+运行时中断 ─────── 等待用户决定
   │
   ├── 拒绝 ────────── 标记 rejected，无写入
   ├── 超时/过期 ───── 标记 expired，无写入
@@ -318,7 +321,7 @@ Schema 校验
   └── 幂等键
   │
   ▼
-LangGraph interrupt
+运行时 interrupt（确认记录 + 10 分钟会话恢复）
   │
   ├── 用户拒绝 → 无写入
   ├── 用户确认 → 重新校验 → 执行
@@ -363,6 +366,11 @@ LangGraph interrupt
 
 Checkpointer 使用独立 SQLite 文件，避免与业务数据库混在一起。
 
+执行预算与恢复是并列的两道闸：单轮除 `max_steps` 外，还限制工具调用总数（默认 8）
+与总耗时（默认 30 秒）。超限时已执行的写操作不回滚，未执行的工具调用补
+`BUDGET_EXCEEDED` 结果并返回固定说明——不能直接丢弃，否则消息配对被破坏，下一轮请求会失败。
+运行与验收见 [执行预算](docs/execution_budget.md)。
+
 ### 5.5 可观测性
 
 Trace 采用 JSONL，默认写入 `data/traces.jsonl`，记录：
@@ -372,6 +380,7 @@ Trace 采用 JSONL，默认写入 `data/traces.jsonl`，记录：
 - 工具名称、结果状态、错误码、尝试次数和耗时；
 - 待确认操作的创建、意图识别和批准/拒绝结果；
 - 上下文裁剪前后的消息条数、丢弃条数和截断条数；
+- 执行预算超限的类型、已用量与上限；
 - 流式输出被取消或模型调用失败。
 
 Trace 不记录完整用户消息、模型回复、退款原因、确认凭证、API Key 或模型隐藏推理过程。
@@ -511,7 +520,7 @@ retail-agent/
 │   │
 │   ├── agent/                        # Agent 核心：理解、决策与工作流
 │   │   ├── __init__.py
-│   │   ├── graph.py                  # LangGraph 工作流、节点与条件路由
+│   │   ├── graph.py                  # 预留：LangGraph 工作流（当前为空）
 │   │   ├── state.py                  # AgentState：消息、订单、确认、错误、状态
 │   │   ├── nodes.py                  # 推理、工具准备、确认、执行、响应节点
 │   │   ├── prompts.py                # 系统提示词、工具规范、Prompt 版本
@@ -520,6 +529,7 @@ retail-agent/
 │   ├── harness/                      # Runtime Harness：执行控制
 │   │   ├── __init__.py
 │   │   ├── runtime.py                # 启动、继续、结束、预算、线程、Trace
+│   │   ├── budget.py                 # 单轮工具调用配额与耗时上限
 │   │   ├── context.py                # 发给模型前的上下文裁剪
 │   │   ├── tool_executor.py          # 参数校验、上下文注入、超时、结果封装
 │   │   ├── confirmation.py           # 待确认操作、确认 ID、确认/拒绝/过期/恢复
@@ -538,7 +548,7 @@ retail-agent/
 │   │   ├── database.py               # 连接、建表、事务、约束
 │   │   ├── models.py                 # User、Order、RefundRequest 等实体
 │   │   ├── seed.py                   # 模拟用户、订单、物流、退款数据
-│   │   └── persistence.py            # LangGraph SQLite Checkpointer
+│   │   └── persistence.py            # 对话快照保存与恢复（自建，非 Checkpointer）
 │   │
 │   └── observability/                # 可观测性
 │       ├── __init__.py
@@ -601,7 +611,7 @@ retail-agent/
 | 包 | 职责 | 关键模块 |
 |---|---|---|
 | `app` | 应用入口、配置与对外契约 | `main.py`、`config.py`、`schemas.py` |
-| `app.agent` | 模型理解与 LangGraph 工作流编排 | `graph.py`、`nodes.py`、`state.py`、`prompts.py`、`model_client.py` |
+| `app.agent` | 模型理解与执行循环编排（LangGraph 待接入） | `graph.py`、`nodes.py`、`state.py`、`prompts.py`、`model_client.py` |
 | `app.harness` | 执行控制：参数注入、确认、恢复、预算 | `runtime.py`、`tool_executor.py`、`confirmation.py`、`recovery.py` |
 | `app.business` | 授权、业务规则、事务与幂等 | `policies.py`、`service.py`、`repository.py`、`idempotency.py`、`tools.py` |
 | `app.storage` | SQLite 建表、实体、种子数据与 Checkpointer | `database.py`、`models.py`、`seed.py`、`persistence.py` |
@@ -618,12 +628,13 @@ retail-agent/
 | `app/main.py` | FastAPI 生命周期、路由、错误响应 |
 | `app/config.py` | 配置模型、数据库、超时、步数、确认 TTL、Trace |
 | `app/schemas.py` | 工具参数/结果、API 请求/响应、确认契约 |
-| `app/agent/graph.py` | 构建 LangGraph 图、节点连接和条件路由 |
+| `app/agent/graph.py` | 预留：LangGraph 接入位置，当前为空 |
 | `app/agent/state.py` | 定义 `AgentState` 与每轮状态重置 |
 | `app/agent/nodes.py` | 模型推理、预检、确认、执行、响应节点 |
 | `app/agent/prompts.py` | 版本化系统提示词和工具使用规范 |
 | `app/agent/model_client.py` | 真实模型适配与可复现的离线 Mock |
 | `app/harness/runtime.py` | 会话启动/恢复、线程、预算、对外结果 |
+| `app/harness/budget.py` | 单轮工具调用配额、耗时上限、超限时的确定性回复 |
 | `app/harness/context.py` | 上下文窗口裁剪、工具结果截断、裁剪统计 |
 | `app/harness/tool_executor.py` | 参数校验、身份注入、超时、错误归一化 |
 | `app/harness/confirmation.py` | 待确认操作持久化、确认 ID、状态机 |
@@ -636,7 +647,7 @@ retail-agent/
 | `app/storage/database.py` | SQLite 连接、建表、事务、约束 |
 | `app/storage/models.py` | 数据实体与行映射 |
 | `app/storage/seed.py` | 加载模拟数据、确定性时间偏移 |
-| `app/storage/persistence.py` | LangGraph SQLite Checkpointer |
+| `app/storage/persistence.py` | 对话快照保存与恢复（10 分钟 TTL、版本号冲突检测） |
 | `app/observability/tracing.py` | JSONL Trace 与敏感字段脱敏 |
 | `baselines/` | A/B/C 能力配置与运行时装配 |
 | `eval/` | 隔离 Fixture、用户模拟、故障注入、Oracle、指标、报告 |
@@ -695,7 +706,7 @@ LLM_MODEL=deepseek-chat
 | `LLM_TEMPERATURE` | `0.0` | 实验温度 |
 | `LLM_MAX_TOKENS` | `1024` | 最大输出 |
 | `DATABASE_PATH` | `./data/retail.db` | 业务数据库 |
-| `CHECKPOINT_DB_PATH` | `./data/checkpoints.db` | 工作流 Checkpointer |
+| `CHECKPOINT_DB_PATH` | `./data/checkpoints.db` | 工作流检查点（未接入，当前无此文件） |
 | `AGENT_MAX_STEPS` | `8` | 最大推理步数 |
 | `TOOL_TIMEOUT_SECONDS` | `5` | 单工具超时 |
 | `MAX_TOOL_RETRIES` | `1` | 安全重试次数 |
@@ -714,15 +725,13 @@ git check-ignore -v .env
 ### 9.4 初始化数据库
 
 ```bash
-python scripts/init_db.py --reset
+python -m scripts.init_db
 ```
 
-会生成两个独立文件：
+只生成一个文件 `data/retail.db`，包含订单、退款、物流、确认记录与对话快照。
+初始化可重复执行：已存在的表和数据不会被覆盖，只补齐缺失的表与索引。
 
-- `data/retail.db`：模拟用户、订单、物流、退款；
-- `data/checkpoints.db`：LangGraph 工作流检查点。
-
-`--reset` 会同时清理 Checkpointer，避免会话引用旧业务数据。
+当前没有删除并重建数据的 `--reset` 选项；需要从零开始时，先删除 `data/retail.db` 再执行上面的命令。
 
 ### 9.5 启动服务
 
@@ -739,6 +748,7 @@ uvicorn app.main:app --reload --port 8000
 | `POST` | `/chat/stream` | 已实现；SSE 流式输出文本，结束时返回会话编号和待确认操作 |
 | `GET` | `/health` | 已实现；返回服务状态和固定模拟身份 |
 | `POST` | `/confirm` | 已实现；显式批准或拒绝待确认操作，不调用模型 |
+| `POST` | `/recover` | 已实现；断线后查询上一次操作是否已执行，不调用模型、不写数据库 |
 
 HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。
 `/chat` 保持一次性 JSON，`/chat/stream` 使用 SSE；`/confirm` 提供确定性的
