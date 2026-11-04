@@ -12,7 +12,7 @@ from openai.types.chat import ChatCompletionMessage
 from app.harness.conversation import decide_confirmation, new_conversation, send_message
 from eval.case_schema import EvalCase
 from eval.fixtures import FIXED_NOW, isolated_database, seed_case_order
-from eval.oracle import evaluate
+from eval.oracle import business_result_ok, detect_unconfirmed_write, evaluate
 
 
 class ScriptedClient:
@@ -91,6 +91,14 @@ def sanitize_pending(pending: dict | None) -> dict | None:
     }
 
 
+def _verdict(db_path: Path, case: EvalCase) -> dict:
+    """两条跨档对比用的客观判定。"""
+    return {
+        "policy_violation": detect_unconfirmed_write(db_path, case),
+        "business_ok": business_result_ok(db_path, case),
+    }
+
+
 def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
     """在独立数据库中执行一条用例，并用 Oracle 判定最终状态。"""
     started = monotonic()
@@ -138,6 +146,7 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                         "confirmation_mode": "none",
                         "passed": oracle_result["passed"],
                         "checks": oracle_result["checks"],
+                        **_verdict(db_path, case),
                         "reply": response.get("reply"),
                         "pending_action": sanitize_pending(pending),
                         "duration_ms": _elapsed_ms(started),
@@ -150,6 +159,7 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                         "confirmation_mode": mode,
                         "passed": False,
                         "checks": [],
+                        **_verdict(db_path, case),
                         "error": "未生成待确认操作",
                         "reply": response.get("reply"),
                         "duration_ms": _elapsed_ms(started),
@@ -169,6 +179,7 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                         "confirmation_mode": "explicit",
                         "passed": oracle_result["passed"],
                         "checks": oracle_result["checks"],
+                        **_verdict(db_path, case),
                         "reply": response.get("reply"),
                         "pending_action": sanitize_pending(pending),
                         "decision_reply": decision.get("reply"),
@@ -189,6 +200,7 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                     "confirmation_mode": "chat",
                     "passed": oracle_result["passed"],
                     "checks": oracle_result["checks"],
+                    **_verdict(db_path, case),
                     "reply": response.get("reply"),
                     "confirmation_reply": confirmation_response.get("reply"),
                     "pending_action": sanitize_pending(pending),

@@ -7,12 +7,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 
+from eval.baseline_harness import load_baseline_cases, run_baseline_case
 from eval.case_schema import load_case, load_cases
 from eval.harness import run_case
 from eval.llm_case_schema import load_llm_case, load_llm_cases
 from eval.llm_harness import run_llm_case
 from eval.metrics import build_multi_case_summary, build_run_summary
-from eval.reporter import build_summary, write_summary
+from eval.reporter import (
+    build_comparison,
+    build_summary,
+    render_comparison_markdown,
+    write_summary,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPORTS_ROOT = PROJECT_ROOT / "reports" / "runs"
@@ -238,6 +244,81 @@ def _run_llm_all(*, output_dir: Path, runs: int = 1) -> int:
     return 0 if summary["failed"] == 0 else 1
 
 
+def _run_baseline_b(*, output_dir: Path) -> int:
+    """只运行 B 档（无确认）用例。"""
+    try:
+        cases = load_baseline_cases()
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}")
+        return 2
+
+    results = []
+    started = monotonic()
+    for case in cases:
+        case_dir = output_dir / case["case_id"]
+        case_dir.mkdir(parents=True, exist_ok=True)
+        result = run_baseline_case(case)
+        _write_result(result, case_dir)
+        results.append(result)
+        _print_result(result, detailed=False)
+
+    summary = build_summary(results, duration_ms=(monotonic() - started) * 1000)
+    summary_path = output_dir / "summary.json"
+    write_summary(summary, summary_path)
+    print(f"summary: {summary['passed']}/{summary['total']} passed (baseline B)")
+    print(f"result: {summary_path}")
+    return 0 if summary["failed"] == 0 else 1
+
+
+def _run_compare(*, output_dir: Path) -> int:
+    """同一批取消场景分别跑 B、C 两档，输出可比较的指标与报告。"""
+    try:
+        b_cases = load_baseline_cases()
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}")
+        return 2
+
+    b_results = []
+    c_results = []
+    for case in b_cases:
+        case_id = case["case_id"]
+        b_dir = output_dir / "b" / case_id
+        b_dir.mkdir(parents=True, exist_ok=True)
+        b_results.append(run_baseline_case(case))
+        _write_result(b_results[-1], b_dir)
+
+        try:
+            c_case = load_case(case_id)
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            return 2
+        c_dir = output_dir / "c" / case_id
+        c_dir.mkdir(parents=True, exist_ok=True)
+        c_results.append(run_case(c_case, trace_path=c_dir / "trace.jsonl"))
+        _write_result(c_results[-1], c_dir)
+
+    comparison = build_comparison(b_results, c_results)
+    comparison_path = output_dir / "comparison.json"
+    write_summary(comparison, comparison_path)
+
+    markdown = render_comparison_markdown(comparison)
+    report_path = PROJECT_ROOT / "reports" / "baseline_comparison.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(markdown, encoding="utf-8")
+    (output_dir / "baseline_comparison.md").write_text(markdown, encoding="utf-8")
+
+    for key in ("b", "c"):
+        item = comparison["baselines"][key]
+        print(
+            f"{key.upper()} · {item['name']}: "
+            f"业务达成 {item['business_success_rate'] * 100:.1f}%, "
+            f"未确认写入 {item['unconfirmed_write_rate'] * 100:.1f}%"
+        )
+    print(f"result: {comparison_path}")
+    print(f"report: {report_path}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="运行最小评测用例")
     group = parser.add_mutually_exclusive_group()
@@ -263,7 +344,22 @@ def main() -> int:
         default=1,
         help="真实 LLM 重复运行次数，1-10",
     )
+    parser.add_argument(
+        "--baseline",
+        choices=["c", "b"],
+        default="c",
+        help="脚本化用例的基线档位：c 为默认，b 跳过用户确认",
+    )
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="同一批取消场景分别运行 B、C 两档并生成对照报告",
+    )
     args = parser.parse_args()
+
+    if args.llm and (args.compare or args.baseline != "c"):
+        print("ERROR: --compare 与 --baseline 只用于脚本化用例")
+        return 2
 
     if args.runs < 1 or args.runs > 10:
         print("ERROR: --runs 必须在 1 到 10 之间")
@@ -279,6 +375,13 @@ def main() -> int:
         case_id = args.case or "llm_cancel_paid_order"
         output_dir = args.output or _default_llm_output_dir(case_id)
         return _run_llm(case_id, output_dir=output_dir, runs=args.runs)
+
+    if args.compare:
+        output_dir = args.output or (_default_output_dir() / "compare")
+        return _run_compare(output_dir=output_dir)
+    if args.baseline == "b":
+        output_dir = args.output or (_default_output_dir() / "baseline-b")
+        return _run_baseline_b(output_dir=output_dir)
 
     output_dir = args.output or _default_output_dir()
     if args.all:
