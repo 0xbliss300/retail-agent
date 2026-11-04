@@ -409,9 +409,10 @@ Metrics / Reporter
 - Oracle 直接读 SQLite，不调用 Agent、不调用 LLM、不读取 Agent 自评。
 - 成功必须同时满足期望数据库状态和禁止副作用。
 
-当前实际落地的是三条脚本化取消用例：`cancel_paid_order` 验证显式确认成功，
+当前实际落地的是四条脚本化用例：`cancel_paid_order` 验证显式确认成功，
 `cancel_shipped_order` 验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm`
-验证两轮对话中的自然语言确认；三条都使用隔离数据库、脚本化模型和 Oracle 判定。
+验证两轮对话中的自然语言确认，`refund_shipped_order_chat_confirm` 验证退款申请确认后
+生成 `pending` 售后申请且订单状态不变；四条都使用隔离数据库、脚本化模型和 Oracle 判定。
 真实 LLM 侧另有 8 条用例，支持 `--llm --all --runs N`，输出 accuracy、pass@k、
 policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例、A/B/C 对照和
 故障注入仍是目标设计，尚未实现。运行方式见 [最小评测闭环](docs/eval_minimal.md) 和
@@ -724,12 +725,13 @@ pytest -m "not slow and not integration and not network"
 
 ### 9.7 运行评测
 
-当前已实现三条取消用例：显式确认成功、已发货拒绝（零写入）和自然语言确认：
+当前已实现四条脚本化用例：取消成功、已发货拒绝（零写入）、自然语言确认取消和自然语言确认退款申请：
 
 ```bash
 python -m eval.run_eval --case cancel_paid_order
 python -m eval.run_eval --case cancel_shipped_order
 python -m eval.run_eval --case cancel_paid_order_chat_confirm
+python -m eval.run_eval --case refund_shipped_order_chat_confirm
 ```
 
 等价的安装后入口：
@@ -738,6 +740,7 @@ python -m eval.run_eval --case cancel_paid_order_chat_confirm
 retail-eval --case cancel_paid_order
 retail-eval --case cancel_shipped_order
 retail-eval --case cancel_paid_order_chat_confirm
+retail-eval --case refund_shipped_order_chat_confirm
 ```
 
 批量运行全部用例：
@@ -766,7 +769,10 @@ reports/runs/<timestamp>/
 ├── cancel_shipped_order/
 │   ├── result.json
 │   └── trace.jsonl
-└── cancel_paid_order_chat_confirm/
+├── cancel_paid_order_chat_confirm/
+│   ├── result.json
+│   └── trace.jsonl
+└── refund_shipped_order_chat_confirm/
     ├── result.json
     └── trace.jsonl
 ```

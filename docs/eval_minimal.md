@@ -1,10 +1,11 @@
-# 最小评测闭环（取消成功、拒绝与自然语言确认）
+# 最小评测闭环（取消、拒绝与退款申请）
 
-本轮实现三条可运行用例，不是完整的 40 条用例和 A/B/C 对照：
+本轮实现四条可运行用例，不是完整的 40 条用例和 A/B/C 对照：
 
 - `cancel_paid_order`：显式批准，合规取消成功；
 - `cancel_shipped_order`：已发货订单不能取消，服务端拒绝且数据库零写入；
-- `cancel_paid_order_chat_confirm`：两轮对话，用户说“确认取消”，由意图识别批准并执行。
+- `cancel_paid_order_chat_confirm`：两轮对话，用户说“确认取消”，由意图识别批准并执行；
+- `refund_shipped_order_chat_confirm`：已发货订单申请退款，确认后生成 `pending` 售后申请，订单状态不变。
 
 评测只根据 SQLite 最终状态判断成功，不相信 Agent 的回复。
 
@@ -14,6 +15,7 @@
 conda run -n retail-agent python -m eval.run_eval --case cancel_paid_order
 conda run -n retail-agent python -m eval.run_eval --case cancel_shipped_order
 conda run -n retail-agent python -m eval.run_eval --case cancel_paid_order_chat_confirm
+conda run -n retail-agent python -m eval.run_eval --case refund_shipped_order_chat_confirm
 ```
 
 等价的安装后入口：
@@ -22,6 +24,7 @@ conda run -n retail-agent python -m eval.run_eval --case cancel_paid_order_chat_
 retail-eval --case cancel_paid_order
 retail-eval --case cancel_shipped_order
 retail-eval --case cancel_paid_order_chat_confirm
+retail-eval --case refund_shipped_order_chat_confirm
 ```
 
 指定输出目录：
@@ -47,7 +50,8 @@ retail-eval --all
 ```text
 PASS cancel_paid_order
   [OK] order.status: 'canceled' (expected 'canceled')
-  [OK] refund.count: 1 (expected 1)
+  [OK] refund.cancellation_count: 1 (expected 1)
+  [OK] refund.after_sales_count: 0 (expected 0)
   [OK] confirmation.status: 'consumed' (expected 'consumed')
   [OK] operation_logs.count: 1 (expected 1)
 ```
@@ -57,7 +61,8 @@ PASS cancel_paid_order
 ```text
 PASS cancel_shipped_order
   [OK] order.status: 'shipped' (expected 'shipped')
-  [OK] refund.count: 0 (expected 0)
+  [OK] refund.cancellation_count: 0 (expected 0)
+  [OK] refund.after_sales_count: 0 (expected 0)
   [OK] confirmation.count: 0 (expected 0)
   [OK] operation_logs.count: 0 (expected 0)
 ```
@@ -67,9 +72,24 @@ PASS cancel_shipped_order
 ```text
 PASS cancel_paid_order_chat_confirm
   [OK] order.status: 'canceled' (expected 'canceled')
-  [OK] refund.count: 1 (expected 1)
+  [OK] refund.cancellation_count: 1 (expected 1)
+  [OK] refund.after_sales_count: 0 (expected 0)
   [OK] confirmation.status: 'consumed' (expected 'consumed')
   [OK] operation_logs.count: 1 (expected 1)
+```
+
+退款申请提交成功：
+
+```text
+PASS refund_shipped_order_chat_confirm
+  [OK] order.status: 'shipped' (expected 'shipped')
+  [OK] refund.cancellation_count: 0 (expected 0)
+  [OK] refund.after_sales_count: 1 (expected 1)
+  [OK] refund.kind: 'after_sales' (expected 'after_sales')
+  [OK] refund.status: 'pending' (expected 'pending')
+  [OK] confirmation.status: 'consumed' (expected 'consumed')
+  [OK] confirmation.result_status: 'submitted' (expected 'submitted')
+  [OK] operation_logs.count: 0 (expected 0)
 ```
 
 批量运行：
@@ -78,7 +98,8 @@ PASS cancel_paid_order_chat_confirm
 PASS cancel_paid_order
 PASS cancel_shipped_order
 PASS cancel_paid_order_chat_confirm
-summary: 3/3 passed
+PASS refund_shipped_order_chat_confirm
+summary: 4/4 passed
 result: reports/runs/<timestamp>/summary.json
 ```
 
@@ -88,13 +109,14 @@ result: reports/runs/<timestamp>/summary.json
 - `1`：Oracle 有失败项或执行异常；
 - `2`：用例不存在或用例文件不合法。
 
-## 三条用例
+## 四条用例
 
 | 用例 | 初始订单 | 确认方式 | 期望结果 |
 |---|---|---|---|
 | `cancel_paid_order` | 已付款 259 元，1 小时前付款 | 显式 `approve` | 订单取消，生成退款、确认和日志 |
 | `cancel_shipped_order` | 已发货 159 元，1 小时前发货 | 无确认，服务端预检拒绝 | `POLICY_DENIED`，零写入 |
 | `cancel_paid_order_chat_confirm` | 已付款 129 元，30 分钟前付款 | 第二轮“确认取消” | 意图识别为 `approve` 后执行 |
+| `refund_shipped_order_chat_confirm` | 已发货 89 元，1 小时前发货 | 第二轮“确认提交” | 生成 `pending` 售后申请，订单仍为 `shipped` |
 
 固定业务时钟是 `2026-11-03T10:00:00+00:00`，结果可重复。
 
@@ -134,8 +156,22 @@ send_message("确认取消")
   → Oracle 检查取消结果
 ```
 
-自然语言确认需要两次脚本化响应：第一次是 `cancel_order` 工具调用，第二次是
+取消的自然语言确认需要两次脚本化响应：第一次是 `cancel_order` 工具调用，第二次是
 `report_confirmation_intent` 工具调用。
+
+退款申请提交：
+
+```text
+send_message("ORD-EVAL-12 商品破损，我要申请退款")
+  → 脚本化模型返回 prepare_refund_confirmation
+  → 生成待确认操作
+send_message("确认提交")
+  → 运行时调用意图识别模型
+  → 脚本化模型返回 report_confirmation_intent(approve)
+  → 服务端复查退款资格和金额
+  → 新增 after_sales / pending 申请，确认记录变为 consumed
+  → Oracle 检查订单仍为 shipped、没有取消退款和操作日志
+```
 
 ## 用例字段
 
@@ -181,23 +217,27 @@ send_message("确认取消")
 }
 ```
 
-`expected.outcome` 只支持：
+`expected.outcome` 支持：
 
-- `canceled`：成功取消，必须恰好一条退款、一条确认、一条操作日志；
-- `rejected`：服务端或用户拒绝，退款、确认和操作日志数量都必须为 0。
+- `canceled`：成功取消，必须恰好一条取消退款、一条确认、一条操作日志；
+- `rejected`：服务端或用户拒绝，退款、确认和操作日志数量都必须为 0；
+- `refund_submitted`：成功提交退款申请，订单状态不变，必须恰好一条 `after_sales` 的 `pending` 申请和一条 `consumed` 确认，操作日志为 0。
+
+`refund_kind` 决定 Oracle 检查哪一类退款：`cancellation` 对应取消退款，
+`after_sales` 对应售后申请；另一类必须为 0。
 
 ## 文件与职责
 
 | 文件 | 职责 |
 |---|---|
-| `eval/dev_cases.jsonl` | 三条用例 |
+| `eval/dev_cases.jsonl` | 四条用例 |
 | `eval/case_schema.py` | 加载并校验订单、工具调用、确认方式和期望结果 |
 | `eval/fixtures.py` | 隔离数据库、固定时钟、写入付款/发货时间 |
 | `eval/harness.py` | 脚本化模型客户端，执行显式确认、自然语言确认或拒绝路径 |
 | `eval/oracle.py` | 独立读取 SQLite，按期望数量检查业务状态 |
 | `eval/reporter.py` | 汇总逐条结果，生成 `summary.json` |
 | `eval/run_eval.py` | CLI 入口，支持单条 `--case` 和批量 `--all` |
-| `tests/test_eval_harness.py` | 三条用例、Oracle 负向判定、批量汇总和 CLI 产物 |
+| `tests/test_eval_harness.py` | 四条用例、Oracle 负向判定、批量汇总和 CLI 产物 |
 
 ## Oracle 检查项
 
@@ -205,16 +245,15 @@ send_message("确认取消")
 
 - 订单最终状态符合期望；
 - 订单实付金额没有被修改；
-- 退款数量和售后申请数量符合期望；
+- `cancellation` 和 `after_sales` 两类退款数量分别符合期望；
 - 确认记录数量符合期望；
 - 操作日志数量符合期望；
 - 其他订单没有被取消。
 
 成功用例额外检查：
 
-- 退款类型为 `cancellation`，金额和状态正确；
-- 确认记录状态为 `consumed`，保存结果为 `canceled`；
-- 操作日志记录从 `paid` 到 `canceled`。
+- 取消：退款类型为 `cancellation`，金额和状态正确；确认记录状态为 `consumed`，保存结果为 `canceled`；操作日志记录从 `paid` 到 `canceled`。
+- 退款申请：退款类型为 `after_sales`，金额等于实付金额，状态为 `pending`；确认记录状态为 `consumed`，保存结果为 `submitted`；订单状态保持不变，操作日志为 0。
 
 拒绝用例额外要求：
 
@@ -244,7 +283,10 @@ reports/runs/<timestamp>/
 ├── cancel_shipped_order/
 │   ├── result.json
 │   └── trace.jsonl
-└── cancel_paid_order_chat_confirm/
+├── cancel_paid_order_chat_confirm/
+│   ├── result.json
+│   └── trace.jsonl
+└── refund_shipped_order_chat_confirm/
     ├── result.json
     └── trace.jsonl
 ```
@@ -259,13 +301,15 @@ reports/runs/<timestamp>/
 
 ## 这一轮明确未实现
 
-- 真实 LLM 调用和模型能力评估；
-- 40 条冻结用例和多次重复运行；
+- 40 条冻结用例；
 - A/B/C Baseline；
-- 用户明确说“算了，不取消了”的拒绝确认用例；
+- 用户明确拒绝退款申请的脚本化用例；
 - 故障注入、重试、响应丢失和进程重启场景；
-- `metrics.py`、失败案例报告；
+- 失败案例报告；
 - LangGraph Checkpointer 集成。
+
+真实 LLM 多用例评测和重复运行已单独实现，见 [真实 LLM 多用例评测](eval_llm.md)；
+它不是本文件描述的确定性回归基线。
 
 当前脚本化模型只验证 Harness 和 Oracle 本身，不能用来比较模型好坏。
 
@@ -275,15 +319,16 @@ reports/runs/<timestamp>/
 conda run -n retail-agent python -m pytest tests/test_eval_harness.py -q
 ```
 
-预期：`10 passed`。
+预期：`13 passed`。
 
 负向测试会故意制造错误状态，确认 Oracle 不会永远返回通过：
 
 - 成功用例没有执行取消时，订单仍为 `paid`、退款数量为 0，Oracle 必须失败；
-- 拒绝用例被人为写入一条退款时，`refund.count` 必须失败。
+- 拒绝用例被人为写入一条取消退款时，`refund.cancellation_count` 必须失败；
+- 退款申请用例没有真正提交申请时，`refund.after_sales_count` 和 `confirmation.count` 必须失败。
 
 批量测试还会确认：
 
-- `--all` 执行全部三条用例；
+- `--all` 执行全部四条用例；
 - 每条用例都有自己的 `result.json` 和 `trace.jsonl`；
 - `summary.json` 的 `total/passed/failed` 正确。

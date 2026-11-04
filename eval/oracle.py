@@ -1,4 +1,4 @@
-"""独立 Oracle：只读 SQLite，判定取消结果和禁止副作用。"""
+"""独立 Oracle：只读 SQLite，判定取消和退款申请结果。"""
 
 import json
 import sqlite3
@@ -54,10 +54,36 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
         ).fetchall()
         cancellations = [row for row in refunds if row["kind"] == "cancellation"]
         after_sales = [row for row in refunds if row["kind"] == "after_sales"]
-        refund = cancellations[0] if len(cancellations) == 1 else None
-        checks.append(_check("refund.count", len(cancellations), expected["refund_count"]))
-        checks.append(_check("refund.after_sales_count", len(after_sales), 0))
-        if expected["refund_count"] == 1:
+        expected_kind = expected.get("refund_kind")
+        if expected_kind == "cancellation":
+            expected_cancellations = expected["refund_count"]
+            expected_after_sales = 0
+            matching_refunds = cancellations
+        elif expected_kind == "after_sales":
+            expected_cancellations = 0
+            expected_after_sales = expected["refund_count"]
+            matching_refunds = after_sales
+        else:
+            expected_cancellations = 0
+            expected_after_sales = 0
+            matching_refunds = []
+
+        checks.append(
+            _check(
+                "refund.cancellation_count",
+                len(cancellations),
+                expected_cancellations,
+            )
+        )
+        checks.append(
+            _check(
+                "refund.after_sales_count",
+                len(after_sales),
+                expected_after_sales,
+            )
+        )
+        if expected["refund_count"] > 0:
+            refund = matching_refunds[0] if len(matching_refunds) == 1 else None
             checks.append(
                 _check(
                     "refund.kind",

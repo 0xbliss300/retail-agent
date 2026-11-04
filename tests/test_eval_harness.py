@@ -56,6 +56,36 @@ def test_cancel_paid_order_chat_confirmation_passes(tmp_path):
     assert decisions[-1]["source"] == "chat"
 
 
+def test_refund_shipped_order_chat_confirmation_passes(tmp_path):
+    case = load_case("refund_shipped_order_chat_confirm")
+
+    result = run_case(case, trace_path=tmp_path / "trace.jsonl")
+
+    assert result["passed"] is True, result
+    assert result["outcome"] == "refund_submitted"
+    assert result["confirmation_mode"] == "chat"
+    assert result["pending_action"] is not None
+    assert result["remaining_pending_action"] is None
+    assert all(check["ok"] for check in result["checks"])
+
+    checks = {check["name"]: check["actual"] for check in result["checks"]}
+    assert checks["order.status"] == "shipped"
+    assert checks["refund.cancellation_count"] == 0
+    assert checks["refund.after_sales_count"] == 1
+    assert checks["refund.kind"] == "after_sales"
+    assert checks["refund.status"] == "pending"
+    assert checks["confirmation.status"] == "consumed"
+    assert checks["confirmation.result_status"] == "submitted"
+    assert checks["operation_logs.count"] == 0
+
+    events = read_events(tmp_path / "trace.jsonl")
+    intents = [event for event in events if event["event"] == "confirmation.intent"]
+    decisions = [event for event in events if event["event"] == "confirmation.decision"]
+    assert intents[-1]["intent"] == "approve"
+    assert decisions[-1]["decision"] == "approve"
+    assert decisions[-1]["source"] == "chat"
+
+
 def test_cancel_shipped_order_rejection_case_passes(tmp_path):
     case = load_case("cancel_shipped_order")
 
@@ -85,7 +115,7 @@ def test_oracle_fails_when_cancellation_did_not_happen(tmp_path):
 
     assert result["passed"] is False
     failed = {check["name"] for check in result["checks"] if not check["ok"]}
-    assert {"order.status", "refund.count"} <= failed
+    assert {"order.status", "refund.cancellation_count"} <= failed
 
 
 def test_oracle_fails_when_rejected_case_has_refund(tmp_path):
@@ -124,7 +154,20 @@ def test_oracle_fails_when_rejected_case_has_refund(tmp_path):
 
     assert result["passed"] is False
     failed = {check["name"] for check in result["checks"] if not check["ok"]}
-    assert "refund.count" in failed
+    assert "refund.cancellation_count" in failed
+
+
+def test_oracle_fails_when_refund_submission_did_not_happen(tmp_path):
+    case = load_case("refund_shipped_order_chat_confirm")
+    db_path = tmp_path / "retail.db"
+
+    with isolated_database(db_path):
+        seed_case_order(case)
+        result = evaluate(db_path, case)
+
+    assert result["passed"] is False
+    failed = {check["name"] for check in result["checks"] if not check["ok"]}
+    assert {"refund.after_sales_count", "confirmation.count"} <= failed
 
 
 @pytest.mark.parametrize(
@@ -133,6 +176,7 @@ def test_oracle_fails_when_rejected_case_has_refund(tmp_path):
         "cancel_paid_order",
         "cancel_shipped_order",
         "cancel_paid_order_chat_confirm",
+        "refund_shipped_order_chat_confirm",
     ],
 )
 def test_cli_writes_result_and_trace(case_id, tmp_path, monkeypatch, capsys):
@@ -163,6 +207,7 @@ def test_cli_all_runs_every_case(tmp_path, monkeypatch, capsys):
         "cancel_paid_order",
         "cancel_shipped_order",
         "cancel_paid_order_chat_confirm",
+        "refund_shipped_order_chat_confirm",
     }
 
     exit_code = run_eval.main()
@@ -173,11 +218,11 @@ def test_cli_all_runs_every_case(tmp_path, monkeypatch, capsys):
         assert f"PASS {case_id}" in output
         assert (tmp_path / case_id / "result.json").exists()
         assert (tmp_path / case_id / "trace.jsonl").exists()
-    assert "summary: 3/3 passed" in output
+    assert "summary: 4/4 passed" in output
 
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["total"] == 3
-    assert summary["passed"] == 3
+    assert summary["total"] == 4
+    assert summary["passed"] == 4
     assert summary["failed"] == 0
     assert summary["duration_ms"] >= 0
     assert {case["case_id"] for case in summary["cases"]} == case_ids

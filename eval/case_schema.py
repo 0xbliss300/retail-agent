@@ -1,4 +1,4 @@
-"""最小评测用例：从 JSONL 加载并校验取消成功、拒绝和自然语言确认用例。"""
+"""最小评测用例：从 JSONL 加载并校验取消、拒绝和退款申请用例。"""
 
 import json
 import re
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CASES_PATH = Path(__file__).with_name("dev_cases.jsonl")
-OUTCOMES = {"canceled", "rejected"}
+OUTCOMES = {"canceled", "rejected", "refund_submitted"}
 CONFIRMATION_MODES = {"explicit", "chat", "none"}
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -80,7 +80,11 @@ def _parse_case(data: dict) -> EvalCase:
 
     tool_call = data.get("tool_call")
     _require(isinstance(tool_call, dict), f"{case_id}: tool_call 必须是对象")
-    _require(tool_call.get("name") == "cancel_order", f"{case_id}: 当前最小评测只支持 cancel_order")
+    tool_name = tool_call.get("name")
+    _require(
+        tool_name in {"cancel_order", "prepare_refund_confirmation"},
+        f"{case_id}: 工具只支持 cancel_order 或 prepare_refund_confirmation",
+    )
     arguments = tool_call.get("arguments")
     _require(isinstance(arguments, dict), f"{case_id}: tool_call.arguments 必须是对象")
     _require(
@@ -132,7 +136,10 @@ def _parse_case(data: dict) -> EvalCase:
     expected = data.get("expected")
     _require(isinstance(expected, dict), f"{case_id}: expected 必须是对象")
     outcome = expected.get("outcome")
-    _require(outcome in OUTCOMES, f"{case_id}: expected.outcome 必须是 canceled 或 rejected")
+    _require(
+        outcome in OUTCOMES,
+        f"{case_id}: expected.outcome 必须是 canceled、rejected 或 refund_submitted",
+    )
     for key in ("order_status", "refund_count", "confirmation_count", "operation_logs"):
         _require(key in expected, f"{case_id}: expected 缺少 {key}")
     _require(
@@ -196,6 +203,49 @@ def _parse_case(data: dict) -> EvalCase:
             isinstance(expected["confirmation_result_status"], str)
             and bool(expected["confirmation_result_status"]),
             f"{case_id}: expected.confirmation_result_status 不能为空",
+        )
+    elif outcome == "refund_submitted":
+        _require(
+            tool_name == "prepare_refund_confirmation",
+            f"{case_id}: 退款提交用例必须使用 prepare_refund_confirmation",
+        )
+        _require(order["status"] == "shipped", f"{case_id}: 退款提交用例必须是已发货订单")
+        _require(confirmation_mode != "none", f"{case_id}: 退款提交必须有确认动作")
+        _require(
+            confirmation_decision == "approve",
+            f"{case_id}: 退款提交的确认意图必须是 approve",
+        )
+        _require(
+            expected["order_status"] == order["status"],
+            f"{case_id}: 提交退款申请不应改变订单状态",
+        )
+        _require(expected["refund_count"] == 1, f"{case_id}: 成功提交必须恰好生成一条退款申请")
+        _require(expected["confirmation_count"] == 1, f"{case_id}: 成功提交必须恰好有一条确认记录")
+        _require(expected["operation_logs"] == 0, f"{case_id}: 提交退款申请不应写取消日志")
+        for key in (
+            "refund_kind",
+            "refund_amount_cents",
+            "refund_status",
+            "confirmation_status",
+            "confirmation_result_status",
+        ):
+            _require(key in expected, f"{case_id}: expected 缺少 {key}")
+        _require(
+            expected["refund_kind"] == "after_sales",
+            f"{case_id}: 退款提交的 refund_kind 必须是 after_sales",
+        )
+        _require(
+            expected["refund_amount_cents"] == order["paid_amount_cents"],
+            f"{case_id}: 退款金额必须等于订单实付金额",
+        )
+        _require(expected["refund_status"] == "pending", f"{case_id}: 新退款申请必须是 pending")
+        _require(
+            expected["confirmation_status"] == "consumed",
+            f"{case_id}: 退款确认必须已消费",
+        )
+        _require(
+            expected["confirmation_result_status"] == "submitted",
+            f"{case_id}: 确认结果必须是 submitted",
         )
     else:
         _require(

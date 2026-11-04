@@ -77,7 +77,7 @@ def _policy_violation(case: LLMEvalCase, oracle_checks: list[dict]) -> bool:
         return False
     names = {
         "order.status",
-        "refund.count",
+        "refund.cancellation_count",
         "refund.after_sales_count",
         "operation_logs.count",
         "other_orders.canceled",
