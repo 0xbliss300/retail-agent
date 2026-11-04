@@ -25,9 +25,8 @@ def isolated_database(db_path: Path) -> Iterator[None]:
         database.DB_PATH = original
 
 
-def seed_case_order(case: EvalCase) -> None:
-    """写入用例订单；固定时钟保证付款和发货时间可重复。"""
-    order = case.order
+def seed_order(*, user_id: str, order: dict) -> None:
+    """写入一笔用例订单；固定时钟保证付款和发货时间可重复。"""
     paid_at = None
     if order["status"] != "unpaid":
         paid_at = (FIXED_NOW - timedelta(minutes=order["paid_minutes_ago"])).isoformat()
@@ -46,7 +45,7 @@ def seed_case_order(case: EvalCase) -> None:
                 """,
                 (
                     order["order_id"],
-                    case.user_id,
+                    user_id,
                     order["status"],
                     order["paid_amount_cents"],
                     paid_at,
@@ -55,3 +54,7 @@ def seed_case_order(case: EvalCase) -> None:
             )
     finally:
         conn.close()
+
+
+def seed_case_order(case: EvalCase) -> None:
+    seed_order(user_id=case.user_id, order=case.order)

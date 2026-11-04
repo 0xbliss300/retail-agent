@@ -3,8 +3,13 @@
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any, Protocol
 
-from eval.case_schema import EvalCase
+
+class CaseView(Protocol):
+    user_id: str
+    order: dict[str, Any]
+    expected: dict[str, Any]
 
 
 def _check(name: str, actual, expected) -> dict:
@@ -16,7 +21,7 @@ def _check(name: str, actual, expected) -> dict:
     }
 
 
-def evaluate(db_path: Path, case: EvalCase) -> dict:
+def evaluate(db_path: Path, case: CaseView) -> dict:
     """直接读取数据库，不调用 Agent、业务 Service 或模型。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row

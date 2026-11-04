@@ -82,7 +82,7 @@ def _elapsed_ms(started: float) -> float:
     return round((monotonic() - started) * 1000, 2)
 
 
-def _sanitize_pending(pending: dict | None) -> dict | None:
+def sanitize_pending(pending: dict | None) -> dict | None:
     if not isinstance(pending, dict):
         return None
     return {
@@ -139,7 +139,7 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                         "passed": oracle_result["passed"],
                         "checks": oracle_result["checks"],
                         "reply": response.get("reply"),
-                        "pending_action": _sanitize_pending(pending),
+                        "pending_action": sanitize_pending(pending),
                         "duration_ms": _elapsed_ms(started),
                     }
 
@@ -170,7 +170,7 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                         "passed": oracle_result["passed"],
                         "checks": oracle_result["checks"],
                         "reply": response.get("reply"),
-                        "pending_action": _sanitize_pending(pending),
+                        "pending_action": sanitize_pending(pending),
                         "decision_reply": decision.get("reply"),
                         "decision_error": decision.get("error"),
                         "duration_ms": _elapsed_ms(started),
@@ -191,8 +191,8 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                     "checks": oracle_result["checks"],
                     "reply": response.get("reply"),
                     "confirmation_reply": confirmation_response.get("reply"),
-                    "pending_action": _sanitize_pending(pending),
-                    "remaining_pending_action": _sanitize_pending(
+                    "pending_action": sanitize_pending(pending),
+                    "remaining_pending_action": sanitize_pending(
                         confirmation_response.get("pending_action")
                     ),
                     "duration_ms": _elapsed_ms(started),

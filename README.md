@@ -411,8 +411,9 @@ Metrics / Reporter
 
 当前实际落地的是三条取消用例：`cancel_paid_order` 验证显式确认成功，`cancel_shipped_order`
 验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm` 验证两轮对话中的自然语言确认；
-三条都使用隔离数据库、脚本化模型和 Oracle 判定。下文的 40 条用例、A/B/C 对照和故障注入
-仍是目标设计，尚未实现。运行方式见 [最小评测闭环](docs/eval_minimal.md)。
+三条都使用隔离数据库、脚本化模型和 Oracle 判定。另有一条真实 LLM 冒烟路径 `--llm`，
+单次运行、不参与能力结论。下文的 40 条用例、A/B/C 对照和故障注入仍是目标设计，尚未实现。
+运行方式见 [最小评测闭环](docs/eval_minimal.md) 和 [真实 LLM 冒烟评测](docs/eval_llm.md)。
 - 冻结测试集不用于 Prompt 调参。
 
 ### 6.2 40 条冻结测试
@@ -770,8 +771,17 @@ reports/runs/<timestamp>/
 
 退出码 `0` 表示全部通过，`1` 表示 Oracle 失败，`2` 表示用例不存在或用例文件不合法。
 
+真实 LLM 冒烟评测（需要 `.env` 配置，单次运行，不代表模型能力）：
+
+```bash
+python -m eval.run_eval --llm --case llm_cancel_paid_order
+```
+
+真实模型自己选择工具和确认意图；可能 PASS 也可能 FAIL。产物与脚本化单条运行相同，
+详见 [真实 LLM 冒烟评测](docs/eval_llm.md)。
+
 40 条冻结用例、A/B/C 对照、User Simulator、故障注入和多次运行指标汇总尚未实现。
-当前用例使用脚本化模型，只验证评测框架和 Oracle，不用于比较模型能力。
+当前脚本化用例只验证评测框架和 Oracle，不用于比较模型能力。
 详见 [最小评测闭环](docs/eval_minimal.md)。
 
 ### 9.8 运行演示脚本
