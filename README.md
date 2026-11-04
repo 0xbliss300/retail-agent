@@ -371,6 +371,7 @@ Trace 采用 JSONL，默认写入 `data/traces.jsonl`，记录：
 - 模型调用开始/结束、消息数量、工具调用数量；
 - 工具名称、结果状态、错误码、尝试次数和耗时；
 - 待确认操作的创建、意图识别和批准/拒绝结果；
+- 上下文裁剪前后的消息条数、丢弃条数和截断条数；
 - 流式输出被取消或模型调用失败。
 
 Trace 不记录完整用户消息、模型回复、退款原因、确认凭证、API Key 或模型隐藏推理过程。
@@ -435,8 +436,8 @@ Metrics / Reporter
 
 全部用例使用隔离数据库、脚本化模型和 Oracle 判定。
 真实 LLM 侧另有 10 条用例，支持 `--llm --all --runs N`，输出 accuracy、pass@k、
-policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例、A/B/C 对照和
-故障注入仍是目标设计，尚未实现。运行方式见 [最小评测闭环](docs/eval_minimal.md) 和
+policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例与故障注入
+仍是目标设计，尚未实现；A/B/C 对照中的 B/C 两档已实现，A 档决定不复现。运行方式见 [最小评测闭环](docs/eval_minimal.md) 和
 [真实 LLM 多用例评测](docs/eval_llm.md)。
 - 冻结测试集不用于 Prompt 调参。
 
@@ -453,22 +454,34 @@ policy violation rate 和延迟；它们仍不是完整模型基准。下文的 
 | 故障注入与恢复 | 3 | 超时、提交后响应丢失、进程重启 |
 | **合计** | **40** | |
 
-### 6.3 A/B/C 对照
+### 6.3 B/C 对照（A 档不复现）
 
-| 能力 | A · Raw ReAct | B · Rule-Guarded | C · Reliable Agent |
+| 能力 | A · Raw ReAct（未实现） | B · Rule-Guarded | C · Reliable Agent |
 |---|---|---|---|
 | 工具调用 | 是 | 是 | 是 |
 | 参数 Schema | 基础 | 是 | 是 |
-| 服务端授权/规则 | 否（仅评测隔离环境） | 是 | 是 |
+| 服务端授权/规则 | 否 | 是 | 是 |
 | 业务预检 | 否 | 是 | 是 |
-| 用户确认 | 否 | 否 | 是 |
+| 用户确认 | 否 | **否** | 是 |
 | 幂等写入 | 否 | 否 | 是 |
 | 持久化 Checkpointer | 否 | 否 | 是 |
 | 超时/响应丢失恢复 | 否 | 否 | 是 |
 
-生产 API 固定使用 C。A 的“无规则/无授权”能力只存在于 eval-only 的隔离环境，不能通过普通环境变量在 API 中启用。
+生产 API 固定使用 C。B 档只存在于 `baselines/rule_guarded.py` 与评测入口。
 
-三个版本的差异构成实验的对照组：A 到 B 的增量是服务端规则与授权，B 到 C 的增量是确认、幂等、持久化与恢复。这样才能把“模型变强了”和“服务端兜住了”分开计量。
+A 档不复现。它要求存在一条跳过用户归属过滤的工具路径，而生产代码里没有这样的入口；
+为对照实验人为造一条，会让仓库长期带着可被误用的旁路。代价是：
+**本实验只能量化「确认、幂等与恢复」的收益，不能量化授权与业务规则本身的收益。**
+
+当前实测（三条取消场景，`reports/baseline_comparison.md`）：
+
+| 指标 | B | C |
+|---|---:|---:|
+| 业务结果达成率 | 100.0% | 100.0% |
+| 未确认写入率 | 66.7% | 0.0% |
+
+业务结果一致而违规率不同，说明只看成功率无法判断一个执行型 Agent 是否安全。
+运行方式、指标定义与局限见 [B/C 对照实验](docs/baseline_comparison.md)。
 
 ### 6.4 核心指标
 
@@ -507,6 +520,7 @@ retail-agent/
 │   ├── harness/                      # Runtime Harness：执行控制
 │   │   ├── __init__.py
 │   │   ├── runtime.py                # 启动、继续、结束、预算、线程、Trace
+│   │   ├── context.py                # 发给模型前的上下文裁剪
 │   │   ├── tool_executor.py          # 参数校验、上下文注入、超时、结果封装
 │   │   ├── confirmation.py           # 待确认操作、确认 ID、确认/拒绝/过期/恢复
 │   │   └── recovery.py               # 重试决策、幂等结果查询、恢复协调
@@ -530,11 +544,11 @@ retail-agent/
 │       ├── __init__.py
 │       └── tracing.py                # 模型、工具、确认、恢复、异常事件
 │
-├── baselines/                        # A/B/C 对照实验配置
+├── baselines/                        # B/C 对照实验
 │   ├── __init__.py
-│   ├── react.py                      # A：原始 ReAct，无完整服务端保护
-│   ├── rule_guarded.py               # B：ReAct + Schema + 授权 + 业务规则
-│   └── reliable.py                   # C：B + 确认 + 持久化 + 幂等恢复
+│   ├── react.py                      # A：未实现，不复现无授权路径
+│   ├── rule_guarded.py               # B：授权 + 业务规则，跳过确认与审计
+│   └── reliable.py                   # C：直接使用 app 现有执行路径
 │
 ├── eval/                             # Evaluation Harness
 │   ├── __init__.py
@@ -610,6 +624,7 @@ retail-agent/
 | `app/agent/prompts.py` | 版本化系统提示词和工具使用规范 |
 | `app/agent/model_client.py` | 真实模型适配与可复现的离线 Mock |
 | `app/harness/runtime.py` | 会话启动/恢复、线程、预算、对外结果 |
+| `app/harness/context.py` | 上下文窗口裁剪、工具结果截断、裁剪统计 |
 | `app/harness/tool_executor.py` | 参数校验、身份注入、超时、错误归一化 |
 | `app/harness/confirmation.py` | 待确认操作持久化、确认 ID、状态机 |
 | `app/harness/recovery.py` | 重试判断、幂等查询、恢复协调 |
@@ -768,6 +783,19 @@ retail-eval --case withdraw_pending_refund
 ```bash
 python -m eval.run_eval --all
 retail-eval --all
+```
+
+B/C 对照实验（同一批取消场景跑两档，生成 `reports/baseline_comparison.md`）：
+
+```bash
+python -m eval.run_eval --compare
+retail-eval --compare
+```
+
+只跑 B 档：
+
+```bash
+python -m eval.run_eval --baseline b
 ```
 
 单条运行的产物：

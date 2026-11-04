@@ -13,6 +13,7 @@ from app.business.service import (
 )
 from app.business.tools import TOOLS
 from app.harness.confirmation import load_active_confirmation, reject_confirmation
+from app.harness.context import trim_messages
 from app.harness.tool_executor import execute_tool
 from app.observability.tracing import emit_trace, new_run_id
 
@@ -254,7 +255,15 @@ def run_agent(
         model_status = "ok"
         message = None
         try:
-            message = request_model(client, messages, TOOLS)
+            window, context_stats = trim_messages(messages)
+            if context_stats["dropped"] or context_stats["truncated"]:
+                emit_trace(
+                    "context.trimmed",
+                    run_id=trace_id,
+                    step=step,
+                    **context_stats,
+                )
+            message = request_model(client, window, TOOLS)
         except Exception:
             model_status = "error"
             raise
@@ -362,7 +371,15 @@ def stream_agent(
         model_started = monotonic()
         model_status = "ok"
         try:
-            for kind, value in stream_model(client, messages, TOOLS):
+            window, context_stats = trim_messages(messages)
+            if context_stats["dropped"] or context_stats["truncated"]:
+                emit_trace(
+                    "context.trimmed",
+                    run_id=trace_id,
+                    step=step,
+                    **context_stats,
+                )
+            for kind, value in stream_model(client, window, TOOLS):
                 if kind == "token":
                     streamed_parts.append(value)
                     yield {"event": "token", "data": {"text": value}}
