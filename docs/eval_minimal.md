@@ -30,6 +30,16 @@ retail-eval --case cancel_paid_order_chat_confirm
 python -m eval.run_eval --case cancel_paid_order_chat_confirm --output reports/runs/demo
 ```
 
+批量运行全部用例：
+
+```bash
+conda run -n retail-agent python -m eval.run_eval --all
+retail-eval --all
+```
+
+批量运行会为每条用例创建子目录，并生成 `summary.json`。`--case` 和 `--all` 互斥；
+不传参数时仍然只运行 `cancel_paid_order`。
+
 ## 预期输出
 
 显式确认成功：
@@ -60,6 +70,16 @@ PASS cancel_paid_order_chat_confirm
   [OK] refund.count: 1 (expected 1)
   [OK] confirmation.status: 'consumed' (expected 'consumed')
   [OK] operation_logs.count: 1 (expected 1)
+```
+
+批量运行：
+
+```text
+PASS cancel_paid_order
+PASS cancel_shipped_order
+PASS cancel_paid_order_chat_confirm
+summary: 3/3 passed
+result: reports/runs/<timestamp>/summary.json
 ```
 
 进程退出码：
@@ -175,8 +195,9 @@ send_message("确认取消")
 | `eval/fixtures.py` | 隔离数据库、固定时钟、写入付款/发货时间 |
 | `eval/harness.py` | 脚本化模型客户端，执行显式确认、自然语言确认或拒绝路径 |
 | `eval/oracle.py` | 独立读取 SQLite，按期望数量检查业务状态 |
-| `eval/run_eval.py` | CLI 入口，打印结果并写 `result.json` |
-| `tests/test_eval_harness.py` | 三条用例、Oracle 负向判定和 CLI 产物 |
+| `eval/reporter.py` | 汇总逐条结果，生成 `summary.json` |
+| `eval/run_eval.py` | CLI 入口，支持单条 `--case` 和批量 `--all` |
+| `tests/test_eval_harness.py` | 三条用例、Oracle 负向判定、批量汇总和 CLI 产物 |
 
 ## Oracle 检查项
 
@@ -204,22 +225,46 @@ Oracle 不调用 Agent、不调用业务 Service、不读 Agent 回复。
 
 ## 产物
 
+单条运行：
+
 ```text
 reports/runs/<timestamp>/
 ├── result.json   # 用例、检查项、通过状态和耗时
 └── trace.jsonl   # 本轮 Agent 的模型、工具和确认事件
 ```
 
+批量运行：
+
+```text
+reports/runs/<timestamp>/
+├── summary.json
+├── cancel_paid_order/
+│   ├── result.json
+│   └── trace.jsonl
+├── cancel_shipped_order/
+│   ├── result.json
+│   └── trace.jsonl
+└── cancel_paid_order_chat_confirm/
+    ├── result.json
+    └── trace.jsonl
+```
+
+`summary.json` 包含：
+
+- `total`、`passed`、`failed` 和总耗时；
+- 每条用例的 `passed`、`outcome`、确认方式、耗时和失败检查项；
+- 失败用例的 `error`。
+
 `reports/runs/` 已在 `.gitignore` 中。
 
 ## 这一轮明确未实现
 
 - 真实 LLM 调用和模型能力评估；
-- 40 条冻结用例和批量运行；
+- 40 条冻结用例和多次重复运行；
 - A/B/C Baseline；
 - 用户明确说“算了，不取消了”的拒绝确认用例；
 - 故障注入、重试、响应丢失和进程重启场景；
-- `metrics.py`、`reporter.py`、失败案例报告；
+- `metrics.py`、失败案例报告；
 - LangGraph Checkpointer 集成。
 
 当前脚本化模型只验证 Harness 和 Oracle 本身，不能用来比较模型好坏。
@@ -230,9 +275,15 @@ reports/runs/<timestamp>/
 conda run -n retail-agent python -m pytest tests/test_eval_harness.py -q
 ```
 
-预期：`8 passed`。
+预期：`10 passed`。
 
 负向测试会故意制造错误状态，确认 Oracle 不会永远返回通过：
 
 - 成功用例没有执行取消时，订单仍为 `paid`、退款数量为 0，Oracle 必须失败；
 - 拒绝用例被人为写入一条退款时，`refund.count` 必须失败。
+
+批量测试还会确认：
+
+- `--all` 执行全部三条用例；
+- 每条用例都有自己的 `result.json` 和 `trace.jsonl`；
+- `summary.json` 的 `total/passed/failed` 正确。

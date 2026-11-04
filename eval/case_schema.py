@@ -1,6 +1,8 @@
 """最小评测用例：从 JSONL 加载并校验取消成功、拒绝和自然语言确认用例。"""
 
 import json
+import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -8,6 +10,7 @@ from typing import Any
 DEFAULT_CASES_PATH = Path(__file__).with_name("dev_cases.jsonl")
 OUTCOMES = {"canceled", "rejected"}
 CONFIRMATION_MODES = {"explicit", "chat", "none"}
+CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,10 @@ def _parse_case(data: dict) -> EvalCase:
     user_id = data.get("user_id")
     user_message = data.get("user_message")
     _require(isinstance(case_id, str) and bool(case_id.strip()), "case_id 不能为空")
+    _require(
+        CASE_ID_PATTERN.fullmatch(case_id) is not None,
+        f"case_id 只能包含字母、数字、下划线和连字符: {case_id}",
+    )
     _require(
         isinstance(user_id, str) and bool(user_id.strip()),
         f"{case_id}: user_id 不能为空",
@@ -218,13 +225,12 @@ def _parse_case(data: dict) -> EvalCase:
     )
 
 
-def load_case(case_id: str, path: Path | None = None) -> EvalCase:
-    """按 case_id 读取一条用例；文件缺失或内容不合法时抛出 ValueError。"""
-    cases_path = path if path is not None else DEFAULT_CASES_PATH
+def _read_case_data(path: Path) -> Iterator[tuple[int, dict]]:
+    """逐行读取 JSONL；空行跳过，非法行给出明确位置。"""
     try:
-        lines = cases_path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise ValueError(f"无法读取用例文件: {cases_path}") from exc
+        raise ValueError(f"无法读取用例文件: {path}") from exc
 
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
@@ -232,10 +238,32 @@ def load_case(case_id: str, path: Path | None = None) -> EvalCase:
         try:
             data = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"用例文件第 {line_number} 行不是合法 JSON: {cases_path}") from exc
+            raise ValueError(f"用例文件第 {line_number} 行不是合法 JSON: {path}") from exc
         if not isinstance(data, dict):
-            raise ValueError(f"用例文件第 {line_number} 行必须是 JSON 对象: {cases_path}")
+            raise ValueError(f"用例文件第 {line_number} 行必须是 JSON 对象: {path}")
+        yield line_number, data
+
+
+def load_case(case_id: str, path: Path | None = None) -> EvalCase:
+    """按 case_id 读取一条用例；文件缺失或内容不合法时抛出 ValueError。"""
+    cases_path = path if path is not None else DEFAULT_CASES_PATH
+    for _, data in _read_case_data(cases_path):
         if data.get("case_id") == case_id:
             return _parse_case(data)
-
     raise ValueError(f"未找到用例 {case_id}（文件: {cases_path}）")
+
+
+def load_cases(path: Path | None = None) -> list[EvalCase]:
+    """读取并校验全部用例；用于批量运行。"""
+    cases_path = path if path is not None else DEFAULT_CASES_PATH
+    cases: list[EvalCase] = []
+    seen: set[str] = set()
+    for _, data in _read_case_data(cases_path):
+        case = _parse_case(data)
+        if case.case_id in seen:
+            raise ValueError(f"用例编号重复: {case.case_id}（文件: {cases_path}）")
+        seen.add(case.case_id)
+        cases.append(case)
+    if not cases:
+        raise ValueError(f"用例文件没有有效用例: {cases_path}")
+    return cases

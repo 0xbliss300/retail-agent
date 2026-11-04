@@ -11,6 +11,7 @@ from eval.case_schema import load_case
 from eval.fixtures import FIXED_NOW, isolated_database, seed_case_order
 from eval.harness import run_case
 from eval.oracle import evaluate
+from eval.reporter import build_summary
 
 
 def read_events(path) -> list[dict]:
@@ -150,3 +151,69 @@ def test_cli_writes_result_and_trace(case_id, tmp_path, monkeypatch, capsys):
     assert result["case_id"] == case_id
     assert result["passed"] is True
     assert (tmp_path / "trace.jsonl").exists()
+
+
+def test_cli_all_runs_every_case(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["retail-eval", "--all", "--output", str(tmp_path)],
+    )
+    case_ids = {
+        "cancel_paid_order",
+        "cancel_shipped_order",
+        "cancel_paid_order_chat_confirm",
+    }
+
+    exit_code = run_eval.main()
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    for case_id in case_ids:
+        assert f"PASS {case_id}" in output
+        assert (tmp_path / case_id / "result.json").exists()
+        assert (tmp_path / case_id / "trace.jsonl").exists()
+    assert "summary: 3/3 passed" in output
+
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["total"] == 3
+    assert summary["passed"] == 3
+    assert summary["failed"] == 0
+    assert summary["duration_ms"] >= 0
+    assert {case["case_id"] for case in summary["cases"]} == case_ids
+    assert all(case["failed_checks"] == [] for case in summary["cases"])
+
+
+def test_summary_counts_failures():
+    summary = build_summary(
+        [
+            {
+                "case_id": "pass_case",
+                "passed": True,
+                "duration_ms": 10.0,
+                "checks": [],
+            },
+            {
+                "case_id": "fail_case",
+                "passed": False,
+                "duration_ms": 20.0,
+                "checks": [
+                    {
+                        "name": "order.status",
+                        "ok": False,
+                        "actual": "paid",
+                        "expected": "canceled",
+                    }
+                ],
+                "error": "执行失败",
+            },
+        ],
+        duration_ms=31.234,
+    )
+
+    assert summary["total"] == 2
+    assert summary["passed"] == 1
+    assert summary["failed"] == 1
+    assert summary["duration_ms"] == 31.23
+    assert summary["cases"][1]["failed_checks"] == ["order.status"]
+    assert summary["cases"][1]["error"] == "执行失败"
