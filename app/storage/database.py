@@ -44,7 +44,7 @@ def migrate_refund_requests(conn: sqlite3.Connection) -> None:
                 CHECK (
                     status IN (
                         'pending', 'approved', 'rejected',
-                        'completed', 'failed'
+                        'completed', 'failed', 'withdrawn'
                     )
                 ),
             idempotency_key TEXT,
@@ -75,7 +75,7 @@ def migrate_confirmations(conn: sqlite3.Connection) -> None:
             session_id TEXT NOT NULL,
             thread_id TEXT NOT NULL,
             tool TEXT NOT NULL
-                CHECK (tool IN ('create_refund', 'cancel_order')),
+                CHECK (tool IN ('create_refund', 'cancel_order', 'cancel_refund')),
             order_id TEXT NOT NULL,
             params_json TEXT NOT NULL,
             params_fingerprint TEXT NOT NULL,
@@ -213,8 +213,150 @@ def migrate_refund_settlements(conn: sqlite3.Connection) -> None:
         """)
 
 
+def _table_sql(conn: sqlite3.Connection, name: str) -> str | None:
+    """读取建表语句，用于判断旧库的 CHECK 约束是否已包含新取值。"""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()
+    return row["sql"] if row is not None else None
+
+
+def _needs_rebuild(conn: sqlite3.Connection, table: str, marker: str) -> bool:
+    sql = _table_sql(conn, table)
+    return sql is not None and marker not in sql
+
+
+def migrate_withdraw_refund(conn: sqlite3.Connection) -> None:
+    """为撤回退款申请扩展状态与工具取值；已有业务数据原样保留。
+
+    SQLite 不能修改 CHECK 约束，只能建新表、搬数据、换名。
+    调用方（init_db）必须在事务外关闭外键，并在提交前做完整性校验。
+    """
+    if _needs_rebuild(conn, "refund_requests", "'withdrawn'"):
+        conn.execute("""
+            CREATE TABLE refund_requests_withdraw (
+                refund_id TEXT PRIMARY KEY NOT NULL,
+                order_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL
+                    CHECK (kind IN ('after_sales', 'cancellation')),
+                amount_cents INTEGER NOT NULL
+                    CHECK (
+                        typeof(amount_cents) = 'integer'
+                        AND amount_cents >= 0
+                    ),
+                reason TEXT NOT NULL
+                    CHECK (length(trim(reason)) > 0),
+                status TEXT NOT NULL
+                    CHECK (
+                        status IN (
+                            'pending', 'approved', 'rejected',
+                            'completed', 'failed', 'withdrawn'
+                        )
+                    ),
+                idempotency_key TEXT,
+                confirmation_id TEXT UNIQUE,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+
+                FOREIGN KEY (order_id, user_id)
+                    REFERENCES orders(order_id, user_id),
+
+                UNIQUE (user_id, idempotency_key)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO refund_requests_withdraw (
+                refund_id, order_id, user_id, kind, amount_cents, reason,
+                status, idempotency_key, confirmation_id, created_at, updated_at
+            )
+            SELECT
+                refund_id, order_id, user_id, kind, amount_cents, reason,
+                status, idempotency_key, confirmation_id, created_at, updated_at
+            FROM refund_requests
+        """)
+        conn.execute("DROP TABLE refund_requests")
+        conn.execute(
+            "ALTER TABLE refund_requests_withdraw RENAME TO refund_requests"
+        )
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_refunds_active_after_sales
+            ON refund_requests(order_id)
+            WHERE kind = 'after_sales'
+              AND status IN ('pending', 'approved')
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_refunds_cancellation_order
+            ON refund_requests(order_id) WHERE kind = 'cancellation'
+        """)
+
+    if _needs_rebuild(conn, "confirmations", "'cancel_refund'"):
+        conn.execute("""
+            CREATE TABLE confirmations_withdraw (
+                confirmation_id TEXT PRIMARY KEY NOT NULL,
+                user_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                tool TEXT NOT NULL
+                    CHECK (tool IN ('create_refund', 'cancel_order', 'cancel_refund')),
+                order_id TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                params_fingerprint TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                status TEXT NOT NULL
+                    CHECK (
+                        status IN (
+                            'pending', 'approved', 'rejected',
+                            'expired', 'consumed'
+                        )
+                    ),
+                idempotency_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                approved_at TEXT,
+                consumed_at TEXT,
+                result_json TEXT,
+
+                FOREIGN KEY (order_id, user_id)
+                    REFERENCES orders(order_id, user_id),
+
+                UNIQUE (user_id, idempotency_key)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO confirmations_withdraw (
+                confirmation_id, user_id, session_id, thread_id, tool,
+                order_id, params_json, params_fingerprint, summary, status,
+                idempotency_key, created_at, expires_at,
+                approved_at, consumed_at, result_json
+            )
+            SELECT
+                confirmation_id, user_id, session_id, thread_id, tool,
+                order_id, params_json, params_fingerprint, summary, status,
+                idempotency_key, created_at, expires_at,
+                approved_at, consumed_at, result_json
+            FROM confirmations
+        """)
+        conn.execute("DROP TABLE confirmations")
+        conn.execute(
+            "ALTER TABLE confirmations_withdraw RENAME TO confirmations"
+        )
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_confirmations_active_thread
+            ON confirmations(user_id, session_id, thread_id)
+            WHERE status IN ('pending', 'approved')
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_confirmations_id_user_order
+            ON confirmations(confirmation_id, user_id, order_id)
+        """)
+
+
 def init_db():
     conn = get_connection()
+    # 重建表期间必须关闭外键；关闭状态只在当前连接有效。
+    conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("BEGIN")
 
     try:
@@ -246,6 +388,7 @@ def init_db():
         migrate_logistics(conn)
         migrate_cancellation(conn)
         migrate_refund_settlements(conn)
+        migrate_withdraw_refund(conn)
 
         conn.executemany(
             """
@@ -261,12 +404,18 @@ def init_db():
             ],
         )
 
+        # 外键在迁移期间关闭，提交前必须确认没有留下悬空引用。
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError(f"迁移后外键校验失败：{len(violations)} 条")
+
         conn.commit()
         print(f"数据库初始化完成：{DB_PATH}")
     except Exception:
         conn.rollback()
         raise
     finally:
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.close()
 
 # 保存对话的表

@@ -11,7 +11,9 @@ from app.business.repository import (
     close_pending_confirmation,
     complete_refund_in_transaction,
     consume_refund_confirmation,
+    consume_withdraw_confirmation,
     get_active_refund,
+    get_after_sales_refund_for_withdraw,
     get_confirmation_for_context,
     get_latest_after_sales_refund,
     get_logistics_for_user,
@@ -22,6 +24,7 @@ from app.business.repository import (
     insert_refund_request,
     insert_refund_settlement,
     refund_order_in_transaction,
+    withdraw_refund_in_transaction,
 )
 from app.storage.database import get_connection
 
@@ -305,6 +308,133 @@ def approve_refund_confirmation(
             )
 
         # 到这里，申请与确认结果已经一起提交。
+        return result
+    finally:
+        conn.close()
+
+
+def _withdraw_params(record: dict) -> dict | None:
+    """校验撤回确认单保存的参数；不接收模型新传入的值。"""
+    raw = record["params_json"]
+    if not isinstance(raw, str):
+        return None
+    try:
+        params = json.loads(raw)
+    except ValueError:
+        return None
+    if (
+        hashlib.sha256(raw.encode("utf-8")).hexdigest() != record["params_fingerprint"]
+        or not isinstance(params, dict)
+        or set(params) != {"order_id", "refund_id", "amount_cents"}
+        or params["order_id"] != record["order_id"]
+        or not isinstance(params["refund_id"], str)
+        or not params["refund_id"].strip()
+        or type(params["amount_cents"]) is not int
+        or params["amount_cents"] < 0
+        or record["idempotency_key"] != f"confirm:{record['confirmation_id']}"
+    ):
+        return None
+    return params
+
+
+def approve_withdraw_confirmation(
+    *,
+    user_id: str,
+    session_id: str,
+    thread_id: str,
+    confirmation_id: str,
+    now: datetime,
+) -> dict:
+    """供可信入口在用户确认后撤回尚未处理的售后申请；不开放给模型。"""
+    context = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "confirmation_id": confirmation_id,
+    }
+    if not all(isinstance(value, str) and value.strip() for value in context.values()):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+    now = now.astimezone(UTC)
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            record = get_confirmation_for_context(conn, **context)
+
+            if record is None:
+                return {"ok": False, "error": "CONFIRMATION_NOT_FOUND"}
+            if record["tool"] != "cancel_refund":
+                return {"ok": False, "error": "CONFIRMATION_INVALID"}
+
+            # 已撤回：重放保存结果，不再修改申请。
+            if record["status"] == "consumed":
+                try:
+                    saved = json.loads(record["result_json"])
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "CONFIRMATION_INVALID"}
+                if not isinstance(saved, dict) or saved.get("status") != "withdrawn":
+                    return {"ok": False, "error": "CONFIRMATION_INVALID"}
+                return saved
+
+            if record["status"] == "expired":
+                return {"ok": False, "error": "CONFIRMATION_EXPIRED"}
+            if record["status"] != "pending":
+                return {"ok": False, "error": "CONFIRMATION_NOT_PENDING"}
+
+            params = _withdraw_params(record)
+            if params is None:
+                return {"ok": False, "error": "CONFIRMATION_INVALID"}
+
+            expires_at = datetime.fromisoformat(record["expires_at"])
+            if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                return {"ok": False, "error": "CONFIRMATION_INVALID"}
+            if now >= expires_at:
+                close_pending_confirmation(conn, **context, status="expired")
+                return {"ok": False, "error": "CONFIRMATION_EXPIRED"}
+
+            # 撤回与内部结算可能同时到达，必须在写事务内复查申请状态。
+            refund = get_after_sales_refund_for_withdraw(
+                conn,
+                user_id=user_id,
+                order_id=params["order_id"],
+                refund_id=params["refund_id"],
+            )
+            if refund is None:
+                return {"ok": False, "error": "REFUND_NOT_FOUND"}
+            if refund["status"] != "pending":
+                return {
+                    "ok": False,
+                    "error": "REFUND_NOT_PENDING",
+                    "status": refund["status"],
+                }
+            if refund["amount_cents"] != params["amount_cents"]:
+                return {"ok": False, "error": "CONFIRMATION_STALE"}
+
+            timestamp = now.isoformat()
+            result = {
+                "ok": True,
+                "status": "withdrawn",
+                "refund_id": refund["refund_id"],
+                "order_id": refund["order_id"],
+                "amount_cents": refund["amount_cents"],
+            }
+            withdraw_refund_in_transaction(
+                conn,
+                refund_id=refund["refund_id"],
+                user_id=user_id,
+                order_id=refund["order_id"],
+                timestamp=timestamp,
+            )
+            consume_withdraw_confirmation(
+                conn,
+                context=context,
+                result_json=json.dumps(result, ensure_ascii=False),
+                timestamp=timestamp,
+            )
+        # 申请状态与确认结果在这里一起提交。
         return result
     finally:
         conn.close()

@@ -19,7 +19,7 @@
   <a href="#1-项目功能">项目功能</a> ·
   <a href="#2-系统架构">系统架构</a> ·
   <a href="#3-业务模型">业务模型</a> ·
-  <a href="#4-六个业务工具">工具契约</a> ·
+  <a href="#4-业务工具">工具契约</a> ·
   <a href="#5-可靠性设计">可靠性设计</a> ·
   <a href="#6-评测设计">评测设计</a> ·
   <a href="#7-项目结构">项目结构</a> ·
@@ -197,6 +197,8 @@ create_refund
 refund_requests.status = pending
 订单仍为 shipped / delivered
     │
+    ├── 用户确认撤回 ──→ status = withdrawn，订单不变，可重新申请
+    │
     ▼
 内部审核 / 结算（非 Agent 工具）
     │
@@ -217,6 +219,11 @@ refund_requests.status = completed
 并在同一事务把订单改为 `refunded`，同时写入只追加的结算记录；不接真实支付。
 运行、拒绝路径和数据验收见 [内部模拟退款结算](docs/refund_settlement.md)。
 
+申请处于 `pending` 时，用户可以在确认后撤回，申请变为 `withdrawn`，订单状态不变，
+之后可以重新提交申请。撤回与内部结算共用 `status = 'pending'` 作为更新前提，
+两者同时到达时只有先提交者生效。运行与数据验收见
+[撤回尚未处理的退款申请](docs/refund_withdraw.md)。
+
 ### 3.3 取消与退款时间窗口
 
 | 操作 | 条件 |
@@ -233,7 +240,7 @@ refund_requests.status = completed
 
 ---
 
-## 4. 六个业务工具
+## 4. 业务工具
 
 | 工具 | 类型 | 输入 | 输出 | 副作用 |
 |---|---|---|---|---|
@@ -243,6 +250,7 @@ refund_requests.status = completed
 | `get_policy` | 只读 | 政策主题 | 政策文本、版本 | 无 |
 | `cancel_order` | 高风险写 | 订单 ID、原因 | 取消结果、退款流水 | 更新订单、写日志 |
 | `create_refund` | 高风险写 | 订单 ID、原因 | 退款申请 ID、状态、金额 | 创建 `pending` 申请 |
+| `withdraw_refund` | 高风险写 | 订单 ID | 撤回结果、申请状态 | 申请置为 `withdrawn` |
 
 当前已接通本地模拟物流查询，运行步骤、返回示例与实现说明见 [物流查询](docs/logistics_query.md)。
 这不代表表中全部目标工具均已实现，也不包含真实快递接口集成。
@@ -409,11 +417,12 @@ Metrics / Reporter
 - Oracle 直接读 SQLite，不调用 Agent、不调用 LLM、不读取 Agent 自评。
 - 成功必须同时满足期望数据库状态和禁止副作用。
 
-当前实际落地的是四条脚本化用例：`cancel_paid_order` 验证显式确认成功，
+当前实际落地的是五条脚本化用例：`cancel_paid_order` 验证显式确认成功，
 `cancel_shipped_order` 验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm`
 验证两轮对话中的自然语言确认，`refund_shipped_order_chat_confirm` 验证退款申请确认后
-生成 `pending` 售后申请且订单状态不变；四条都使用隔离数据库、脚本化模型和 Oracle 判定。
-真实 LLM 侧另有 8 条用例，支持 `--llm --all --runs N`，输出 accuracy、pass@k、
+生成 `pending` 售后申请且订单状态不变，`refund_shipped_order_reject` 验证用户拒绝后
+不创建退款申请；五条都使用隔离数据库、脚本化模型和 Oracle 判定。
+真实 LLM 侧另有 10 条用例，支持 `--llm --all --runs N`，输出 accuracy、pass@k、
 policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例、A/B/C 对照和
 故障注入仍是目标设计，尚未实现。运行方式见 [最小评测闭环](docs/eval_minimal.md) 和
 [真实 LLM 多用例评测](docs/eval_llm.md)。
@@ -725,13 +734,14 @@ pytest -m "not slow and not integration and not network"
 
 ### 9.7 运行评测
 
-当前已实现四条脚本化用例：取消成功、已发货拒绝（零写入）、自然语言确认取消和自然语言确认退款申请：
+当前已实现五条脚本化用例：取消成功、已发货拒绝（零写入）、自然语言确认取消、自然语言确认退款申请和用户拒绝退款申请：
 
 ```bash
 python -m eval.run_eval --case cancel_paid_order
 python -m eval.run_eval --case cancel_shipped_order
 python -m eval.run_eval --case cancel_paid_order_chat_confirm
 python -m eval.run_eval --case refund_shipped_order_chat_confirm
+python -m eval.run_eval --case refund_shipped_order_reject
 ```
 
 等价的安装后入口：
@@ -741,6 +751,7 @@ retail-eval --case cancel_paid_order
 retail-eval --case cancel_shipped_order
 retail-eval --case cancel_paid_order_chat_confirm
 retail-eval --case refund_shipped_order_chat_confirm
+retail-eval --case refund_shipped_order_reject
 ```
 
 批量运行全部用例：
@@ -772,14 +783,17 @@ reports/runs/<timestamp>/
 ├── cancel_paid_order_chat_confirm/
 │   ├── result.json
 │   └── trace.jsonl
-└── refund_shipped_order_chat_confirm/
+├── refund_shipped_order_chat_confirm/
+│   ├── result.json
+│   └── trace.jsonl
+└── refund_shipped_order_reject/
     ├── result.json
     └── trace.jsonl
 ```
 
 退出码 `0` 表示全部通过，`1` 表示 Oracle 失败，`2` 表示用例不存在或用例文件不合法。
 
-真实 LLM 多用例评测（8 条用例，需要 `.env` 配置，仍不是完整模型基准）：
+真实 LLM 多用例评测（10 条用例，需要 `.env` 配置，仍不是完整模型基准）：
 
 ```bash
 python -m eval.run_eval --llm --case llm_cancel_paid_order
@@ -787,7 +801,7 @@ python -m eval.run_eval --llm --all --runs 3
 ```
 
 真实模型自己选择工具和确认意图；可能 PASS 也可能 FAIL。`--llm --all --runs 3` 会串行运行
-8 条用例各三次，输出 accuracy、pass@1、pass@3、policy_violation_rate 和 p50/p95 延迟，
+10 条用例各三次，输出 accuracy、pass@1、pass@3、policy_violation_rate 和 p50/p95 延迟，
 并生成每用例、每轮的 `result.json` 和 `trace.jsonl`。
 详见 [真实 LLM 多用例评测](docs/eval_llm.md)。
 

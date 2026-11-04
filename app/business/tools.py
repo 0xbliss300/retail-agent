@@ -173,6 +173,29 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "withdraw_refund",
+            "description": (
+                "用户明确要求撤回尚未处理的退款申请时，准备待确认撤回操作。"
+                "只撤回状态为pending的申请，不改变订单状态，不需要退款原因。"
+                "本次调用仅保存摘要，用户另行明确确认后由运行时执行；"
+                "不得声称申请已撤回。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "已有待处理退款申请的订单号，例如 ORD-2002。",
+                    },
+                },
+                "required": ["order_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 def list_orders(user_id: str, *, limit: int = 10, offset: int = 0) -> dict:

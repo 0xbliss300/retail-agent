@@ -423,7 +423,7 @@ def get_pending_confirmations_for_user(
         SELECT *
         FROM confirmations
         WHERE user_id = ?
-          AND tool IN ('create_refund', 'cancel_order')
+          AND tool IN ('create_refund', 'cancel_order', 'cancel_refund')
           AND status = 'pending'
         ORDER BY created_at DESC, rowid DESC
         """,
@@ -508,3 +508,71 @@ def consume_cancel_confirmation(
     )
     if cursor.rowcount != 1:
         raise RuntimeError("待确认取消操作状态发生变化")
+
+
+def get_after_sales_refund_for_withdraw(
+    conn: sqlite3.Connection, *, user_id: str, order_id: str, refund_id: str,
+) -> dict | None:
+    """读取待撤回的售后申请；同时校验订单归属，跨用户返回 None。"""
+    row = conn.execute(
+        """
+        SELECT r.refund_id, r.order_id, r.user_id, r.kind,
+               r.amount_cents, r.reason, r.status,
+               r.created_at, r.updated_at
+        FROM refund_requests AS r
+        JOIN orders AS o
+          ON o.order_id = r.order_id
+         AND o.user_id = r.user_id
+        WHERE r.refund_id = ?
+          AND r.user_id = ?
+          AND r.order_id = ?
+          AND r.kind = 'after_sales'
+        """,
+        (refund_id, user_id, order_id),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def withdraw_refund_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    refund_id: str,
+    user_id: str,
+    order_id: str,
+    timestamp: str,
+) -> None:
+    """只允许 pending 变为 withdrawn；调用方负责提交或回滚。"""
+    cursor = conn.execute(
+        """
+        UPDATE refund_requests
+        SET status = 'withdrawn', updated_at = ?
+        WHERE refund_id = ? AND user_id = ? AND order_id = ?
+          AND kind = 'after_sales' AND status = 'pending'
+        """,
+        (timestamp, refund_id, user_id, order_id),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("撤回时退款申请状态发生变化")
+
+
+def consume_withdraw_confirmation(
+    conn: sqlite3.Connection,
+    *,
+    context: dict,
+    result_json: str,
+    timestamp: str,
+) -> None:
+    """记录撤回执行结果；只允许消费当前上下文的 pending。"""
+    cursor = conn.execute(
+        """
+        UPDATE confirmations
+        SET status='consumed', approved_at=:timestamp, consumed_at=:timestamp,
+            result_json=:result_json
+        WHERE confirmation_id=:confirmation_id AND user_id=:user_id
+          AND session_id=:session_id AND thread_id=:thread_id
+          AND tool='cancel_refund' AND status='pending'
+        """,
+        {**context, "result_json": result_json, "timestamp": timestamp},
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("待确认撤回操作状态发生变化")

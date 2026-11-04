@@ -12,6 +12,7 @@ READ_ONLY_TOOLS = frozenset({
 WRITE_TOOLS = frozenset({
     "cancel_order",
     "prepare_refund_confirmation",
+    "withdraw_refund",
 })
 
 # 只读工具遇到超时或数据库忙时可以安全重试；业务拒绝和普通异常不重试。

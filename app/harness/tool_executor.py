@@ -16,7 +16,11 @@ from app.business.tools import (
     get_refund_status,
     list_orders,
 )
-from app.harness.confirmation import prepare_cancel_confirmation, prepare_refund_confirmation
+from app.harness.confirmation import (
+    prepare_cancel_confirmation,
+    prepare_refund_confirmation,
+    prepare_withdraw_confirmation,
+)
 from app.harness.recovery import (
     READ_ONLY_TOOLS,
     WRITE_TOOLS,
@@ -55,6 +59,18 @@ def _resolve_handler(
             user_id=user_id,
             limit=args.get("limit", 10),
             offset=args.get("offset", 0),
+        )
+
+    if name == "withdraw_refund":
+        if set(args) != {"order_id"}:
+            raise _InvalidArguments
+        order_id = _require_text(args["order_id"])
+        return lambda: prepare_withdraw_confirmation(
+            user_id=user_id,
+            session_id=session_id,
+            thread_id=thread_id,
+            order_id=order_id,
+            now=now if now is not None else datetime.now(UTC),
         )
 
     if name in WRITE_TOOLS:

@@ -9,7 +9,9 @@ from uuid import uuid4
 from app.business.repository import (
     close_pending_confirmation,
     get_active_confirmation_for_context,
+    get_active_refund,
     get_confirmation_for_context,
+    get_order_for_user,
     get_pending_confirmations_for_user,
     insert_pending_confirmation,
 )
@@ -243,6 +245,97 @@ def prepare_cancel_confirmation(
     return {
         "ok": True, "status": "awaiting_confirmation", "tool": "cancel_order",
         "confirmation_id": confirmation_id, "summary": summary, "expires_at": expires_at,
+    }
+
+
+def prepare_withdraw_confirmation(
+    *,
+    user_id: str,
+    session_id: str,
+    thread_id: str,
+    order_id: str,
+    now: datetime,
+) -> dict:
+    """保存撤回摘要，不修改退款申请；批准时必须重新校验申请状态。"""
+    if not all(
+        isinstance(v, str) and v.strip()
+        for v in (user_id, session_id, thread_id, order_id)
+    ):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+    now = now.astimezone(UTC)
+    order_id = order_id.strip()
+
+    order = get_order_for_user(user_id=user_id, order_id=order_id)
+    if order is None:
+        return {"ok": False, "error": "ORDER_NOT_FOUND"}
+
+    refund = get_active_refund(user_id=user_id, order_id=order_id)
+    if refund is None:
+        return {
+            "ok": False,
+            "error": "NO_ACTIVE_REFUND",
+            "reason": "该订单没有可撤回的售后申请。",
+        }
+    if refund["status"] != "pending":
+        return {
+            "ok": False,
+            "error": "REFUND_NOT_PENDING",
+            "status": refund["status"],
+            "reason": "该申请已进入处理，不能撤回。",
+        }
+
+    params = {
+        "order_id": order_id,
+        "refund_id": refund["refund_id"],
+        "amount_cents": refund["amount_cents"],
+    }
+    raw = json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    amount = params["amount_cents"]
+    summary = (
+        f"撤回订单 {order_id} 的退款申请 {refund['refund_id']}，"
+        f"金额 {amount // 100}.{amount % 100:02d} 元。"
+        "订单状态不会改变，撤回后可以重新申请。"
+    )
+    confirmation_id = f"cfm_{uuid4().hex}"
+    expires_at = (now + CONFIRMATION_TTL).isoformat()
+    record = {
+        "confirmation_id": confirmation_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "tool": "cancel_refund",
+        "order_id": order_id,
+        "params_json": raw,
+        "params_fingerprint": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "summary": summary,
+        "status": "pending",
+        "idempotency_key": f"confirm:{confirmation_id}",
+        "created_at": now.isoformat(),
+        "expires_at": expires_at,
+    }
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active = get_active_confirmation_for_context(
+                conn, user_id=user_id, session_id=session_id, thread_id=thread_id,
+            )
+            _expire_if_due(conn, active, now)
+            if not insert_pending_confirmation(conn, record=record):
+                return {"ok": False, "error": "PENDING_ACTION_EXISTS"}
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "status": "awaiting_confirmation",
+        "tool": "cancel_refund",
+        "confirmation_id": confirmation_id,
+        "summary": summary,
+        "expires_at": expires_at,
     }
 
 

@@ -22,6 +22,7 @@ orders.status:          shipped | delivered -> refunded
 |---|---|
 | `after_sales`、`pending`，订单 `shipped`/`delivered`，金额等于实付 | 同一事务完成退款和订单状态 |
 | 同一退款重复结算 | 返回首次保存结果，不重复写入 |
+| 用户已撤回的申请（`withdrawn`） | `REFUND_NOT_PENDING`，不写入 |
 | 退款不存在 | `REFUND_NOT_FOUND` |
 | 取消产生的 `cancellation` 流水 | `REFUND_KIND_NOT_SUPPORTED`，不写入 |
 | 退款不是 `pending` | `REFUND_NOT_PENDING`，不写入 |

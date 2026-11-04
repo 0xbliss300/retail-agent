@@ -17,6 +17,7 @@ from app.agent.prompts import (
 from app.business.service import (
     approve_cancel_confirmation,
     approve_refund_confirmation,
+    approve_withdraw_confirmation,
     get_confirmation,
 )
 from app.harness.confirmation import load_active_confirmation, reject_confirmation
@@ -344,7 +345,7 @@ def decide_confirmation(
     )
     if record is None:
         return {"error": "CONFIRMATION_NOT_FOUND"}
-    if record["tool"] not in {"cancel_order", "create_refund"}:
+    if record["tool"] not in {"cancel_order", "create_refund", "cancel_refund"}:
         return {"error": "CONFIRMATION_INVALID"}
 
     was_pending = record["status"] == "pending"
@@ -356,10 +357,13 @@ def decide_confirmation(
     }
     if decision == "reject":
         result = reject_confirmation(**service_context, now=current)
-    elif record["tool"] == "cancel_order":
-        result = approve_cancel_confirmation(**service_context, now=current)
     else:
-        result = approve_refund_confirmation(**service_context, now=current)
+        approve = {
+            "cancel_order": approve_cancel_confirmation,
+            "create_refund": approve_refund_confirmation,
+            "cancel_refund": approve_withdraw_confirmation,
+        }[record["tool"]]
+        result = approve(**service_context, now=current)
 
     emit_trace(
         "confirmation.decision",
@@ -375,7 +379,7 @@ def decide_confirmation(
     )
 
     reply = format_confirmation_result(
-        is_cancel=record["tool"] == "cancel_order",
+        tool=record["tool"],
         result=result,
     )
 

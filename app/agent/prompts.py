@@ -58,6 +58,10 @@ REFUND_PROMPT = (
     "completed表示系统记录已完成，failed表示处理失败。"
     "只报告系统保存的状态，不编造审核、支付进度或到账时间。"
     "查询进度不得创建新的待确认操作或退款申请。"
+    "用户要求撤回尚未处理的退款申请时，调用withdraw_refund，只需要订单号。"
+    "撤回只适用于pending的申请，不改变订单状态，撤回后可以重新提交申请。"
+    "撤回同样需要用户明确确认，准备成功不等于已经撤回。"
+    "没有可撤回申请时按NO_ACTIVE_REFUND说明；申请已进入处理时按REFUND_NOT_PENDING说明。"
 )
 CANCELLATION_PROMPT = (
     "用户明确要求取消订单时，调用cancel_order准备待确认取消操作。"
