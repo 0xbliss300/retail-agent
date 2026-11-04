@@ -253,12 +253,24 @@ def _parse_case(data: dict) -> EvalCase:
             f"{case_id}: 拒绝用例的最终状态应与初始订单状态一致",
         )
         _require(expected["refund_count"] == 0, f"{case_id}: 拒绝用例不能生成退款")
-        _require(expected["confirmation_count"] == 0, f"{case_id}: 拒绝用例不能生成确认记录")
         _require(expected["operation_logs"] == 0, f"{case_id}: 拒绝用例不能写操作日志")
-        if confirmation_mode != "none":
+        if confirmation_mode == "none":
+            _require(
+                expected["confirmation_count"] == 0,
+                f"{case_id}: 没有确认动作时不能生成确认记录",
+            )
+        else:
             _require(
                 confirmation_decision == "reject",
                 f"{case_id}: 拒绝用例的确认意图必须是 reject",
+            )
+            _require(
+                expected["confirmation_count"] == 1,
+                f"{case_id}: 用户拒绝后必须恰好有一条确认记录",
+            )
+            _require(
+                expected.get("confirmation_status") == "rejected",
+                f"{case_id}: 用户拒绝后确认状态必须是 rejected",
             )
 
     normalized_expected = dict(expected)

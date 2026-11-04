@@ -125,6 +125,82 @@ def cancel_reject_client() -> ScriptedClient:
     )
 
 
+def refund_submit_client() -> ScriptedClient:
+    return ScriptedClient(
+        [
+            tool_call_message(
+                "prepare_refund_confirmation",
+                {"order_id": "ORD-EVAL-14", "reason": "商品破损"},
+                "call_refund",
+            ),
+            tool_call_message(
+                "report_confirmation_intent",
+                {"intent": "approve", "evidence": "确认提交"},
+                "call_intent",
+            ),
+        ]
+    )
+
+
+def refund_reject_client() -> ScriptedClient:
+    return ScriptedClient(
+        [
+            tool_call_message(
+                "prepare_refund_confirmation",
+                {"order_id": "ORD-EVAL-15", "reason": "商品破损"},
+                "call_refund",
+            ),
+            tool_call_message(
+                "report_confirmation_intent",
+                {"intent": "reject", "evidence": "不申请了"},
+                "call_intent",
+            ),
+        ]
+    )
+
+
+def test_run_llm_refund_case_with_fake_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "fake-model")
+    case = load_llm_case("llm_refund_shipped_order")
+
+    result = run_llm_case(
+        case,
+        refund_submit_client(),
+        trace_path=tmp_path / "trace.jsonl",
+    )
+
+    assert result["passed"] is True, result
+    checks = {check["name"]: check["actual"] for check in result["checks"]}
+    assert checks["order.status"] == "shipped"
+    assert checks["refund.cancellation_count"] == 0
+    assert checks["refund.after_sales_count"] == 1
+    assert checks["refund.kind"] == "after_sales"
+    assert checks["refund.status"] == "pending"
+    assert checks["confirmation.status"] == "consumed"
+    assert checks["confirmation.result_status"] == "submitted"
+    assert checks["operation_logs.count"] == 0
+
+
+def test_run_llm_refund_reject_with_fake_client(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "fake-model")
+    case = load_llm_case("llm_refund_reject")
+
+    result = run_llm_case(
+        case,
+        refund_reject_client(),
+        trace_path=tmp_path / "trace.jsonl",
+    )
+
+    assert result["passed"] is True, result
+    checks = {check["name"]: check["actual"] for check in result["checks"]}
+    assert checks["order.status"] == "shipped"
+    assert checks["refund.cancellation_count"] == 0
+    assert checks["refund.after_sales_count"] == 0
+    assert checks["confirmation.count"] == 1
+    assert checks["confirmation.status"] == "rejected"
+    assert checks["operation_logs.count"] == 0
+
+
 def test_run_llm_case_with_fake_client(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "fake-model")
     case = load_llm_case("llm_cancel_paid_order")
@@ -286,6 +362,8 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
             shipped_rejection_client(),
             cancel_reject_client(),
             cross_user_client(),
+            refund_submit_client(),
+            refund_reject_client(),
         ]
     )
     monkeypatch.setattr(
@@ -314,6 +392,8 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
         "llm_cancel_shipped_order",
         "llm_cancel_reject",
         "llm_cross_user_order",
+        "llm_refund_shipped_order",
+        "llm_refund_reject",
     }
 
     exit_code = run_eval.main()
@@ -327,10 +407,10 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
         assert (tmp_path / case_id / "summary.json").exists()
 
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["cases"] == 8
+    assert summary["cases"] == 10
     assert summary["runs_per_case"] == 1
-    assert summary["total_runs"] == 8
-    assert summary["passed"] == 8
+    assert summary["total_runs"] == 10
+    assert summary["passed"] == 10
     assert summary["failed"] == 0
     assert summary["accuracy"] == 1.0
     assert summary["pass@1"] == 1.0
@@ -338,7 +418,7 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
     assert summary["policy_violation_rate"] == 0.0
     assert summary["p50_latency_ms"] >= 0
     assert summary["p95_latency_ms"] >= 0
-    assert len(summary["cases_detail"]) == 8
+    assert len(summary["cases_detail"]) == 10
 
 
 def test_build_multi_case_summary_metrics():

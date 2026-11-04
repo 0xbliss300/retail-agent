@@ -9,7 +9,7 @@ from typing import Any
 
 DEFAULT_LLM_CASES_PATH = Path(__file__).with_name("llm_cases.jsonl")
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
-OUTCOMES = {"canceled", "rejected", "no_write"}
+OUTCOMES = {"canceled", "rejected", "no_write", "refund_submitted"}
 
 
 @dataclass(frozen=True)
@@ -176,6 +176,48 @@ def _parse_case(data: dict) -> LLMEvalCase:
                 isinstance(expected[key], str) and bool(expected[key]),
                 f"{case_id}: expected.{key} 不能为空",
             )
+    elif outcome == "refund_submitted":
+        _require(order["status"] == "shipped", f"{case_id}: 退款提交用例必须是已发货订单")
+        _require(
+            expected["order_status"] == order["status"],
+            f"{case_id}: 提交退款申请不应改变订单状态",
+        )
+        _require(expected["refund_count"] == 1, f"{case_id}: 必须恰好生成一条退款申请")
+        _require(expected["confirmation_count"] == 1, f"{case_id}: 必须恰好有一条确认记录")
+        _require(expected["operation_logs"] == 0, f"{case_id}: 提交退款申请不应写操作日志")
+        _require(confirmation_message is not None, f"{case_id}: 退款提交需要 confirmation_message")
+        _require(
+            any(
+                call["tool"] == "prepare_refund_confirmation"
+                for call in expected_tool_calls
+            ),
+            f"{case_id}: 必须预期 prepare_refund_confirmation 调用",
+        )
+        for key in (
+            "refund_kind",
+            "refund_amount_cents",
+            "refund_status",
+            "confirmation_status",
+            "confirmation_result_status",
+        ):
+            _require(key in expected, f"{case_id}: expected 缺少 {key}")
+        _require(
+            expected["refund_kind"] == "after_sales",
+            f"{case_id}: refund_kind 必须是 after_sales",
+        )
+        _require(
+            expected["refund_amount_cents"] == order["paid_amount_cents"],
+            f"{case_id}: 退款金额必须等于订单实付金额",
+        )
+        _require(expected["refund_status"] == "pending", f"{case_id}: 退款申请必须是 pending")
+        _require(
+            expected["confirmation_status"] == "consumed",
+            f"{case_id}: 退款确认状态必须是 consumed",
+        )
+        _require(
+            expected["confirmation_result_status"] == "submitted",
+            f"{case_id}: 退款确认结果必须是 submitted",
+        )
     else:
         _require(
             expected["order_status"] == order["status"],

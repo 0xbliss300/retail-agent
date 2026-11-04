@@ -86,6 +86,34 @@ def test_refund_shipped_order_chat_confirmation_passes(tmp_path):
     assert decisions[-1]["source"] == "chat"
 
 
+def test_refund_shipped_order_reject_case_passes(tmp_path):
+    case = load_case("refund_shipped_order_reject")
+
+    result = run_case(case, trace_path=tmp_path / "trace.jsonl")
+
+    assert result["passed"] is True, result
+    assert result["outcome"] == "rejected"
+    assert result["confirmation_mode"] == "chat"
+    assert result["pending_action"] is not None
+    assert result["remaining_pending_action"] is None
+    assert all(check["ok"] for check in result["checks"])
+
+    checks = {check["name"]: check["actual"] for check in result["checks"]}
+    assert checks["order.status"] == "shipped"
+    assert checks["refund.cancellation_count"] == 0
+    assert checks["refund.after_sales_count"] == 0
+    assert checks["confirmation.count"] == 1
+    assert checks["confirmation.status"] == "rejected"
+    assert checks["operation_logs.count"] == 0
+
+    events = read_events(tmp_path / "trace.jsonl")
+    intents = [event for event in events if event["event"] == "confirmation.intent"]
+    decisions = [event for event in events if event["event"] == "confirmation.decision"]
+    assert intents[-1]["intent"] == "reject"
+    assert decisions[-1]["decision"] == "reject"
+    assert decisions[-1]["source"] == "chat"
+
+
 def test_cancel_shipped_order_rejection_case_passes(tmp_path):
     case = load_case("cancel_shipped_order")
 
@@ -170,6 +198,45 @@ def test_oracle_fails_when_refund_submission_did_not_happen(tmp_path):
     assert {"refund.after_sales_count", "confirmation.count"} <= failed
 
 
+def test_oracle_fails_when_rejected_refund_has_after_sales(tmp_path):
+    case = load_case("refund_shipped_order_reject")
+    db_path = tmp_path / "retail.db"
+
+    with isolated_database(db_path):
+        seed_case_order(case)
+        conn = database.get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO refund_requests (
+                        refund_id, order_id, user_id, kind, amount_cents, reason, status,
+                        idempotency_key, confirmation_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "rf_bad_after_sales",
+                        case.order["order_id"],
+                        case.user_id,
+                        "after_sales",
+                        case.order["paid_amount_cents"],
+                        "测试写入",
+                        "pending",
+                        "bad-after-sales-key",
+                        None,
+                        FIXED_NOW.isoformat(),
+                        FIXED_NOW.isoformat(),
+                    ),
+                )
+        finally:
+            conn.close()
+        result = evaluate(db_path, case)
+
+    assert result["passed"] is False
+    failed = {check["name"] for check in result["checks"] if not check["ok"]}
+    assert "refund.after_sales_count" in failed
+
+
 @pytest.mark.parametrize(
     "case_id",
     [
@@ -177,6 +244,7 @@ def test_oracle_fails_when_refund_submission_did_not_happen(tmp_path):
         "cancel_shipped_order",
         "cancel_paid_order_chat_confirm",
         "refund_shipped_order_chat_confirm",
+        "refund_shipped_order_reject",
     ],
 )
 def test_cli_writes_result_and_trace(case_id, tmp_path, monkeypatch, capsys):
@@ -208,6 +276,7 @@ def test_cli_all_runs_every_case(tmp_path, monkeypatch, capsys):
         "cancel_shipped_order",
         "cancel_paid_order_chat_confirm",
         "refund_shipped_order_chat_confirm",
+        "refund_shipped_order_reject",
     }
 
     exit_code = run_eval.main()
@@ -218,11 +287,11 @@ def test_cli_all_runs_every_case(tmp_path, monkeypatch, capsys):
         assert f"PASS {case_id}" in output
         assert (tmp_path / case_id / "result.json").exists()
         assert (tmp_path / case_id / "trace.jsonl").exists()
-    assert "summary: 4/4 passed" in output
+    assert "summary: 5/5 passed" in output
 
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["total"] == 4
-    assert summary["passed"] == 4
+    assert summary["total"] == 5
+    assert summary["passed"] == 5
     assert summary["failed"] == 0
     assert summary["duration_ms"] >= 0
     assert {case["case_id"] for case in summary["cases"]} == case_ids
