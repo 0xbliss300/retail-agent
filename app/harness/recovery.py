@@ -92,6 +92,8 @@ def describe_recovery(
         "expires_at": record["expires_at"],
         "last_state": status,
         "result": None,
+        # 只在仍可确认时返回编号；已执行、已拒绝的记录不再需要它。
+        "confirmation_id": None,
     }
 
     if status == "consumed":
@@ -110,7 +112,11 @@ def describe_recovery(
         if now >= expires_at:
             # 与 pending 区分：过期的操作不会再执行。
             return {**payload, "state": "idle", "last_state": "expired"}
-        return {**payload, "state": "awaiting_confirmation"}
+        return {
+            **payload,
+            "state": "awaiting_confirmation",
+            "confirmation_id": record["confirmation_id"],
+        }
 
     # rejected、expired：已结束且没有执行业务写入。
     return {**payload, "state": "idle"}

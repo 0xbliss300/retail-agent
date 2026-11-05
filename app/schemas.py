@@ -61,3 +61,5 @@ class RecoverResponse(BaseModel):
     summary: str | None = None
     expires_at: str | None = None
     result: dict | None = None
+    # 仅 awaiting_confirmation 时返回，供客户端在恢复后继续确认。
+    confirmation_id: str | None = None

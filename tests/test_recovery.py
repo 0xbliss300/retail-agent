@@ -81,7 +81,8 @@ def test_pending_confirmation_is_reported(recoverable):
     assert result["tool"] == "cancel_order"
     assert result["order_id"] == "ORD-R1"
     assert result["expires_at"] is not None
-    assert confirmation_id
+    # 恢复后要继续确认，客户端需要这个编号；只在这一种状态下返回。
+    assert result["confirmation_id"] == confirmation_id
 
 
 def test_executed_operation_returns_saved_result(recoverable):
@@ -98,6 +99,8 @@ def test_executed_operation_returns_saved_result(recoverable):
     assert result["result"]["status"] == "canceled"
     assert result["result"]["order_id"] == "ORD-R1"
     assert result["result"]["refund"]["amount_cents"] == 25900
+    # 已消费的确认不再可执行，也就不再返回编号。
+    assert result["confirmation_id"] is None
 
 
 def test_rejected_operation_returns_idle(recoverable):

@@ -566,6 +566,8 @@ retail-agent/
 │       ├── __init__.py
 │       └── tracing.py                # 模型、工具、确认、恢复、异常事件
 │
+├── frontend/                         # 预留：界面待用 React 重做，当前为空
+│
 ├── baselines/                        # B/C 对照实验
 │   ├── __init__.py
 │   ├── react.py                      # A：未实现，不复现无授权路径
@@ -745,6 +747,10 @@ python -m scripts.init_db
 
 当前没有删除并重建数据的 `--reset` 选项；需要从零开始时，先删除 `data/retail.db` 再执行上面的命令。
 
+演示订单的付款与发货时间以初始化时刻为基准。取消窗口是 24 小时、退款窗口是 7 天，
+所以数据库建好几天后再演示时，这些订单会自然超出窗口，得到的是规则拒绝而不是流程故障。
+要重新演示成功路径，先备份并删除 `data/retail.db`，再执行一次初始化。
+
 ### 9.5 启动服务
 
 先初始化数据库，再启动 FastAPI：
@@ -761,6 +767,9 @@ uvicorn app.main:app --reload --port 8000
 | `GET` | `/health` | 已实现；返回服务状态和固定模拟身份 |
 | `POST` | `/confirm` | 已实现；显式批准或拒绝待确认操作，不调用模型 |
 | `POST` | `/recover` | 已实现；断线后查询上一次操作是否已执行，不调用模型、不写数据库 |
+
+当前只提供 HTTP 接口，没有随仓库提供页面：`frontend/` 是预留目录，界面将用 React 重做，
+届时由 FastAPI 托管构建产物。在此之前，可以用下面的调用示例或 `scripts/demo_chat.py` 交互。
 
 HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。
 `/chat` 保持一次性 JSON，`/chat/stream` 使用 SSE；`/confirm` 提供确定性的
@@ -896,22 +905,23 @@ print(resp.json()["reply"], resp.json().get("pending_action"))
 查询类请求直接返回结果；写操作先返回待确认操作，用户确认后才落库。
 
 ```text
-› 我要取消 ORD-1002
+› ORD-2003 商品破损，我要申请退款
 
-  ORD-1002 已支付、尚未发货，在 24 小时取消窗口内。
-  取消后将生成一笔 ¥199.00 的退款流水，订单变为 canceled。
+  订单 ORD-2003 已发货，符合售后申请条件。
+  确认后将提交一笔 69.00 元的全额退款申请，订单状态保持 shipped。
   确认执行？
 
   pending_action:
     confirmation_id: cfm_7f3a91c2e8b4        # 不可预测，兼作唯一凭证
-    summary:         取消订单 ORD-1002（退款 ¥199.00）
-    expires_at:      2026-10-26T12:55:00+08:00
+    summary:         为订单 ORD-2003 提交全额退款申请，金额 69.00 元，原因：商品破损。提交申请不代表退款已到账。
+    expires_at:      2026-11-05T21:25:00+08:00   # 10 分钟后过期
 
 › 确认
 
-  已取消 ORD-1002，退款流水已生成（status: completed）。
+  退款申请已提交，当前状态 pending；订单仍为 shipped。
 ```
 
+回复文本由模型生成，措辞不固定；判定依据是 `pending_action` 与数据库里的实际状态。
 拒绝、超时或过期都不会产生任何业务写入。
 
 ### 10.3 确认接口
