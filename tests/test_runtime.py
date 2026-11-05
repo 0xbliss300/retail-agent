@@ -10,6 +10,7 @@ from unittest.mock import patch
 from openai.types.chat import ChatCompletionMessage
 
 from app.agent.prompts import ORDER_PROMPT, POLICY_PROMPT, build_system_prompt
+from app.agent.scope import SCOPE_REFUSAL, off_topic_reason
 from app.harness.runtime import create_messages, run_agent
 from app.harness.tool_executor import execute_tool
 
@@ -82,6 +83,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("步数上限", answer)
         self.assertEqual(messages[-1], {"role": "assistant", "content": answer})
         self.assertEqual(len(create_messages(build_system_prompt(ORDER_PROMPT, POLICY_PROMPT))), 1)
+
+    def test_off_topic_request_skips_model_entirely(self):
+        """域外请求在运行时终止：0 次模型调用，历史只多一条确定性拒答。"""
+        messages = create_messages(build_system_prompt(ORDER_PROMPT))
+        with patch("app.harness.runtime.request_model") as model:
+            answer = run_agent("用 Python 写一个冒泡排序", "USER-001", messages, None)
+        self.assertEqual(model.call_count, 0)
+        self.assertEqual(answer, SCOPE_REFUSAL)
+        self.assertEqual([m["role"] for m in messages], ["system", "user", "assistant"])
+
+    def test_in_domain_messages_are_not_blocked(self):
+        """闸门必须放行真实售后请求，否则省下的 token 换成了误拒。"""
+        for text in ("帮我查订单", "ORD-1001 是什么", "继续", "你好", "能不能退款"):
+            with self.subTest(text=text):
+                self.assertIsNone(off_topic_reason(text))
 
 
 if __name__ == "__main__":

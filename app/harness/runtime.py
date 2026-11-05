@@ -6,6 +6,7 @@ from time import monotonic
 
 from app.agent.confirmation_intent import classify_confirmation_intent
 from app.agent.model_client import request_model, stream_model
+from app.agent.scope import SCOPE_REFUSAL, off_topic_reason
 from app.business.service import (
     approve_cancel_confirmation,
     approve_refund_confirmation,
@@ -256,6 +257,18 @@ def run_agent(
         messages.append({"role": "assistant", "content": answer})
         return answer
 
+    # 域外请求在这里终止，不进入模型循环，也不消耗工具配额。
+    scope_reason = off_topic_reason(user_message)
+    if scope_reason is not None:
+        emit_trace(
+            "scope.blocked",
+            run_id=trace_id,
+            reason=scope_reason,
+            message_chars=len(user_message),
+        )
+        messages.append({"role": "assistant", "content": SCOPE_REFUSAL})
+        return SCOPE_REFUSAL
+
     for step in range(max_steps):
         if budget.expired():
             answer = TIME_BUDGET_ANSWER
@@ -401,6 +414,19 @@ def stream_agent(
         )
         messages.append({"role": "assistant", "content": answer})
         yield {"event": "token", "data": {"text": answer}}
+        return
+
+    # 域外请求在这里终止，不进入模型循环，也不消耗工具配额。
+    scope_reason = off_topic_reason(user_message)
+    if scope_reason is not None:
+        emit_trace(
+            "scope.blocked",
+            run_id=trace_id,
+            reason=scope_reason,
+            message_chars=len(user_message),
+        )
+        messages.append({"role": "assistant", "content": SCOPE_REFUSAL})
+        yield {"event": "token", "data": {"text": SCOPE_REFUSAL}}
         return
 
     for step in range(max_steps):
