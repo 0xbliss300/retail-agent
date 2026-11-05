@@ -41,3 +41,23 @@ coverage.xml
 # 不必要的md文件
 AGENTS.md
 TODO.md
+
+/img/
+
+# 运行时产物：trace 与其他导出数据统一按扩展名忽略
+/data/*.jsonl
+
+# 任意位置的 Node 产物
+node_modules/
+
+# 系统与编辑器垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+*~
+
+# 一次性导出报告；reports 下整理好的 .md 仍然跟踪
+/reports/*.json
+/reports/*.jsonl
