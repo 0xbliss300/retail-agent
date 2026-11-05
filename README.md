@@ -566,7 +566,7 @@ retail-agent/
 │       ├── __init__.py
 │       └── tracing.py                # 模型、工具、确认、恢复、异常事件
 │
-├── frontend/                         # 预留：界面待用 React 重做，当前为空
+├── frontend/                         # React + Vite 前端（对话、订单、退款、政策）
 │
 ├── baselines/                        # B/C 对照实验
 │   ├── __init__.py
@@ -767,9 +767,24 @@ uvicorn app.main:app --reload --port 8000
 | `GET` | `/health` | 已实现；返回服务状态和固定模拟身份 |
 | `POST` | `/confirm` | 已实现；显式批准或拒绝待确认操作，不调用模型 |
 | `POST` | `/recover` | 已实现；断线后查询上一次操作是否已执行，不调用模型、不写数据库 |
+| `GET` | `/orders` | 已实现；分页查询本人订单 |
+| `GET` | `/orders/{order_id}` | 已实现；订单、物流、退款资格与最近一次申请 |
+| `GET` | `/refunds` | 已实现；按状态分页查询本人售后申请 |
+| `GET` | `/refunds/{refund_id}` | 已实现；单条售后申请及订单状态 |
+| `POST` | `/refunds/{refund_id}/withdraw` | 已实现；页面确认后撤回待处理申请，写事务内复查状态 |
+| `GET` | `/policies` | 已实现；取消、退款、撤回的模拟业务政策 |
 
-当前只提供 HTTP 接口，没有随仓库提供页面：`frontend/` 是预留目录，界面将用 React 重做，
-届时由 FastAPI 托管构建产物。在此之前，可以用下面的调用示例或 `scripts/demo_chat.py` 交互。
+`frontend/` 是 React 前端（Vite），覆盖对话、订单、退款和政策页面。先启动后端，再启动前端：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+打开 `http://127.0.0.1:5173`，`/api` 会代理到 `http://127.0.0.1:8000`。
+也可以 `npm run build` 后只启动后端，由 FastAPI 在 `http://127.0.0.1:8000/` 直接托管页面。
+页面清单、数据来源和当前限制见 [前端说明](docs/frontend.md)。
 
 HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。
 `/chat` 保持一次性 JSON，`/chat/stream` 使用 SSE；`/confirm` 提供确定性的
