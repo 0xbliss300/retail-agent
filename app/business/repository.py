@@ -116,6 +116,30 @@ def list_refunds_for_user(
         conn.close()
 
 
+def get_refund_for_user(*, user_id: str, refund_id: str) -> dict | None:
+    """按申请编号读取本人的售后申请；跨用户按不存在处理。"""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT r.refund_id, r.order_id, r.amount_cents, r.reason, r.status,
+                   r.created_at, r.updated_at, o.status AS order_status,
+                   o.paid_amount_cents, o.paid_at, o.shipped_at, o.delivered_at
+            FROM refund_requests AS r
+            JOIN orders AS o
+              ON o.order_id = r.order_id
+             AND o.user_id = r.user_id
+            WHERE r.refund_id = ?
+              AND r.user_id = ?
+              AND r.kind = 'after_sales'
+            """,
+            (refund_id, user_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        conn.close()
+
+
 def get_active_refund(
     *,
     user_id: str,

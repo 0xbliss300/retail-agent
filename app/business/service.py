@@ -20,6 +20,7 @@ from app.business.repository import (
     get_order_for_user,
     get_orders_for_user,
     get_refund_for_settlement,
+    get_refund_for_user,
     get_refund_settlement,
     insert_refund_request,
     insert_refund_settlement,
@@ -114,6 +115,20 @@ def list_refunds(
         "offset": offset,
         "has_more": has_more,
         "next_offset": offset + limit if has_more else None,
+    }
+
+
+def get_refund(*, user_id: str, refund_id: str) -> dict:
+    """读取单条售后申请及其订单；不返回内部身份字段。"""
+    if not isinstance(refund_id, str) or not refund_id.strip():
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    refund = get_refund_for_user(user_id=user_id, refund_id=refund_id.strip())
+    if refund is None:
+        return {"ok": False, "error": "REFUND_NOT_FOUND"}
+
+    return {
+        "ok": True,
+        "refund": {key: value for key, value in refund.items() if key != "user_id"},
     }
 
 

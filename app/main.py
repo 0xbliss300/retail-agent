@@ -2,12 +2,18 @@
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from openai import APIError
 
 from app.agent.model_client import create_client
+from app.business import service as business
+from app.business.policies import POLICIES
+from app.business.service import approve_withdraw_confirmation
+from app.harness.confirmation import prepare_withdraw_confirmation
 from app.harness.conversation import (
     decide_confirmation,
     open_conversation,
@@ -217,3 +223,174 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# 前端只读接口：订单、售后申请与政策。
+# 全部使用服务端固定模拟身份，和 /chat 共享同一份 SQLite 数据。
+# ---------------------------------------------------------------------------
+
+# 页面上的撤回操作使用独立的会话上下文：用户在对话框中的点击就是确认动作，
+# 服务端仍按“准备确认 → 写事务内复查并执行”的既有流程处理。
+UI_WITHDRAW_SESSION = "ui:refund-withdraw"
+
+
+def _policy_items(text: str) -> list[str]:
+    return [f"{sentence.strip()}。" for sentence in text.split("。") if sentence.strip()]
+
+
+def _require_ok(result: dict, status_code: int, message: str) -> dict:
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": result.get("error", "INVALID_ARGUMENTS"), "message": message},
+        )
+    return result
+
+
+@app.get("/orders")
+def list_orders(
+    limit: int = Query(10, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    result = business.list_orders(user_id=DEMO_USER_ID, limit=limit, offset=offset)
+    return _require_ok(result, 422, "分页参数无效。")
+
+
+@app.get("/orders/{order_id}")
+def order_detail(order_id: str) -> dict:
+    order_result = business.get_order(user_id=DEMO_USER_ID, order_id=order_id.strip())
+    if not order_result.get("ok"):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "ORDER_NOT_FOUND", "message": "未找到该订单。"},
+        )
+    order = {key: value for key, value in order_result["order"].items() if key != "user_id"}
+    logistics = business.get_logistics(user_id=DEMO_USER_ID, order_id=order["order_id"])
+    eligibility = business.check_refund_eligibility(
+        user_id=DEMO_USER_ID,
+        order_id=order["order_id"],
+        now=datetime.now(UTC),
+    )
+    latest_refund = business.get_refund_status(
+        user_id=DEMO_USER_ID,
+        order_id=order["order_id"],
+    )
+    return {
+        "order": order,
+        "logistics": logistics.get("logistics"),
+        "refund_eligibility": eligibility,
+        "latest_refund": latest_refund.get("refund"),
+    }
+
+
+@app.get("/refunds")
+def list_refunds(
+    status: str | None = None,
+    limit: int = Query(10, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    result = business.list_refunds(
+        user_id=DEMO_USER_ID,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return _require_ok(result, 422, "筛选条件或分页参数无效。")
+
+
+@app.get("/refunds/{refund_id}")
+def refund_detail(refund_id: str) -> dict:
+    result = business.get_refund(user_id=DEMO_USER_ID, refund_id=refund_id.strip())
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "REFUND_NOT_FOUND", "message": "未找到该退款申请。"},
+        )
+    return result
+
+
+@app.post("/refunds/{refund_id}/withdraw")
+def withdraw_refund(refund_id: str) -> dict:
+    """撤回待处理申请；页面确认后调用，服务端重新校验状态与金额。"""
+    now = datetime.now(UTC)
+    result = business.get_refund(user_id=DEMO_USER_ID, refund_id=refund_id.strip())
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "REFUND_NOT_FOUND", "message": "未找到该退款申请。"},
+        )
+
+    refund = result["refund"]
+    session_id = f"{UI_WITHDRAW_SESSION}:{refund['order_id']}"
+    thread_id = f"{UI_WITHDRAW_SESSION}:{refund['refund_id']}"
+
+    prepared = prepare_withdraw_confirmation(
+        user_id=DEMO_USER_ID,
+        session_id=session_id,
+        thread_id=thread_id,
+        order_id=refund["order_id"],
+        now=now,
+    )
+    if not prepared.get("ok"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": prepared.get("error", "WITHDRAW_REJECTED"),
+                "message": prepared.get("reason", "当前申请不能撤回。"),
+            },
+        )
+
+    executed = approve_withdraw_confirmation(
+        user_id=DEMO_USER_ID,
+        session_id=session_id,
+        thread_id=thread_id,
+        confirmation_id=prepared["confirmation_id"],
+        now=now,
+    )
+    if not executed.get("ok"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": executed.get("error", "WITHDRAW_REJECTED"),
+                "message": "撤回未执行，请刷新后重试。",
+            },
+        )
+
+    return {
+        "status": executed["status"],
+        "refund_id": executed["refund_id"],
+        "order_id": executed["order_id"],
+        "amount_cents": executed["amount_cents"],
+    }
+
+
+@app.get("/policies")
+def list_policies() -> dict:
+    return {
+        "policies": {
+            topic: _policy_items(text)
+            for topic, text in POLICIES.items()
+        }
+    }
+
+
+# ---------------------------------------------------------------------------
+# 单服务托管：`cd frontend && npm run build` 之后由本服务直接提供页面。
+# 未构建时保持接口服务的原始行为，不会凭空生成路由。
+# ---------------------------------------------------------------------------
+
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+FRONTEND_ASSETS = FRONTEND_DIST / "assets"
+
+if FRONTEND_ASSETS.is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_ASSETS), name="frontend-assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def serve_frontend(path: str) -> FileResponse:
+        """前端路由回落到 index.html；真实存在的静态文件直接返回。"""
+        if path:
+            candidate = (FRONTEND_DIST / path).resolve()
+            if FRONTEND_DIST in candidate.parents and candidate.is_file():
+                return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / "index.html")
