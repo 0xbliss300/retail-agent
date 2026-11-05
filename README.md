@@ -364,7 +364,12 @@ Schema 校验
 单个工具失败时，运行时直接返回确定性说明，避免模型继续编造成功结果。
 重试规则、线程限制和验证方式见 [工具超时与失败处理](docs/tool_recovery.md)。
 
-Checkpointer 使用独立 SQLite 文件，避免与业务数据库混在一起。
+「提交成功但响应丢失」这一行已有可复现的验证：三条 `fault_*_response_lost` 用例在事务提交后
+丢弃响应，再检查恢复查询返回 `executed`、用户重放同一确认不产生第二次写入。
+见 [故障注入与恢复](docs/fault_injection.md)。
+
+对话历史保存在同一个 `retail.db` 的 `chat_threads` 表里，按 `version` 做乐观并发控制，
+没有独立的 checkpoint 数据库。
 
 执行预算与恢复是并列的两道闸：单轮除 `max_steps` 外，还限制工具调用总数（默认 8）
 与总耗时（默认 30 秒）。超限时已执行的写操作不回滚，未执行的工具调用补
@@ -432,7 +437,7 @@ Metrics / Reporter
 - Oracle 直接读 SQLite，不调用 Agent、不调用 LLM、不读取 Agent 自评。
 - 成功必须同时满足期望数据库状态和禁止副作用。
 
-当前实际落地的是 14 条脚本化用例，分三组：
+当前实际落地的是 18 条脚本化用例，分四组：
 
 - 取消 6 条：`cancel_paid_order` 验证显式确认成功，`cancel_unpaid_order` 验证未付款取消不生成退款流水，
   `cancel_shipped_order` 验证已发货订单被拒绝且零写入，`cancel_paid_order_chat_confirm` 验证两轮对话中的
@@ -441,13 +446,20 @@ Metrics / Reporter
   `refund_shipped_order_reject` 验证用户拒绝，`refund_paid_order_denied` 验证未发货不能申请，
   `refund_out_of_window` 验证超过 7 天被拒；
 - 撤回 3 条：`withdraw_pending_refund` 验证确认后申请变为 `withdrawn`、订单不变，
-  `withdraw_without_refund` 与 `withdraw_already_withdrawn` 验证没有可撤回申请时零写入。
+  `withdraw_without_refund` 与 `withdraw_already_withdrawn` 验证没有可撤回申请时零写入；
+- 提交后响应丢失 4 条：`fault_cancel_response_lost`、`fault_refund_response_lost`、
+  `fault_withdraw_response_lost` 分别覆盖取消、退款申请和撤回的显式确认，
+  `fault_chat_cancel_response_lost` 覆盖自然语言确认下的整轮回复丢失。
+  业务写入已提交但响应被丢弃，恢复查询必须返回 `executed` 和保存的结果，
+  用户重放同一确认不得新增任何业务行。
 
 全部用例使用隔离数据库、脚本化模型和 Oracle 判定。
 真实 LLM 侧另有 10 条用例，支持 `--llm --all --runs N`，输出 accuracy、pass@k、
-policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例与故障注入
-仍是目标设计，尚未实现；A/B/C 对照中的 B/C 两档已实现，A 档决定不复现。运行方式见 [最小评测闭环](docs/eval_minimal.md) 和
-[真实 LLM 多用例评测](docs/eval_llm.md)。
+policy violation rate 和延迟；它们仍不是完整模型基准。下文的 40 条用例仍是目标设计，
+尚未实现；故障注入已实现「提交后响应丢失」一个故障点，覆盖显式确认与自然语言确认两条路径，
+超时和进程重启仍未覆盖。A/B/C 对照中的 B/C 两档已实现，A 档决定不复现。运行方式见
+[最小评测闭环](docs/eval_minimal.md)、[真实 LLM 多用例评测](docs/eval_llm.md)
+和 [故障注入与恢复](docs/fault_injection.md)。
 - 冻结测试集不用于 Prompt 调参。
 
 ### 6.2 40 条冻结测试
@@ -567,7 +579,7 @@ retail-agent/
 │   ├── case_schema.py                # Case Schema：输入、初始状态、期望、故障
 │   ├── fixtures.py                   # 每个 Case/基线独立数据库与 Checkpointer
 │   ├── user_simulator.py             # 多轮用户脚本、参数补充、确认/拒绝
-│   ├── fault_injection.py            # 超时、响应丢失、进程中断
+│   ├── fault_injection.py            # 故障注入：提交后响应丢失（已实现）
 │   ├── oracle.py                     # 独立判定：数据库状态与禁止副作用
 │   ├── metrics.py                    # 成功率、违规率、错误工具、延迟
 │   ├── reporter.py                   # 汇总结果、对比报告、失败案例
@@ -771,13 +783,14 @@ pytest -m "not slow and not integration and not network"
 
 ### 9.7 运行评测
 
-当前已实现 14 条脚本化用例，覆盖取消 6 条、退款申请 5 条、撤回 3 条。
+当前已实现 18 条脚本化用例，覆盖取消 6 条、退款申请 5 条、撤回 3 条、提交后响应丢失 4 条。
 单条运行：
 
 ```bash
 python -m eval.run_eval --case cancel_paid_order
 python -m eval.run_eval --case refund_out_of_window
 python -m eval.run_eval --case withdraw_pending_refund
+python -m eval.run_eval --case fault_cancel_response_lost
 ```
 
 等价的安装后入口：
@@ -844,9 +857,10 @@ python -m eval.run_eval --llm --all --runs 3
 并生成每用例、每轮的 `result.json` 和 `trace.jsonl`。
 详见 [真实 LLM 多用例评测](docs/eval_llm.md)。
 
-40 条冻结用例、A/B/C 对照、User Simulator、故障注入、wrong_tool_rate、avg_tool_calls
-和 Token 成本尚未实现。当前脚本化用例只验证评测框架和 Oracle，不用于比较模型能力。
-详见 [最小评测闭环](docs/eval_minimal.md)。
+40 条冻结用例、A/B/C 对照、User Simulator、wrong_tool_rate、avg_tool_calls
+和 Token 成本尚未实现。故障注入已覆盖「提交后响应丢失」，但只有 3 条用例、不包含超时与进程重启。
+当前脚本化用例只验证评测框架和 Oracle，不用于比较模型能力。
+详见 [最小评测闭环](docs/eval_minimal.md) 与 [故障注入与恢复](docs/fault_injection.md)。
 
 ### 9.8 运行演示脚本
 

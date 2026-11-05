@@ -1,6 +1,6 @@
-# 最小评测闭环（取消、退款申请与撤回）
+# 最小评测闭环（取消、退款申请、撤回与响应丢失）
 
-本轮实现 14 条可运行用例，不是完整的 40 条用例和 A/B/C 对照。
+本轮实现 18 条可运行用例，不是完整的 40 条用例和 A/B/C 对照。
 
 取消（6 条）：
 
@@ -24,6 +24,13 @@
 - `withdraw_pending_refund`：预置 `pending` 申请，确认后变为 `withdrawn`，订单不变；
 - `withdraw_without_refund`：没有可撤回申请，服务端拒绝且零写入；
 - `withdraw_already_withdrawn`：申请已撤回，不能重复撤回。
+
+提交后响应丢失（4 条，详见 [故障注入与恢复](fault_injection.md)）：
+
+- `fault_cancel_response_lost`：取消已提交但响应丢失，恢复查询为 `executed`，重放不新增业务行；
+- `fault_refund_response_lost`：退款申请已提交但响应丢失，申请仍为 `pending`，订单不变；
+- `fault_withdraw_response_lost`：撤回已提交但响应丢失，申请 `withdrawn`，金额不变；
+- `fault_chat_cancel_response_lost`：自然语言确认下整轮回复丢失，恢复与重放结论相同。
 
 评测只根据 SQLite 最终状态判断成功，不相信 Agent 的回复。
 
@@ -137,7 +144,11 @@ PASS refund_explicit_confirm
 PASS withdraw_pending_refund
 PASS withdraw_without_refund
 PASS withdraw_already_withdrawn
-summary: 14/14 passed
+PASS fault_cancel_response_lost
+PASS fault_refund_response_lost
+PASS fault_withdraw_response_lost
+PASS fault_chat_cancel_response_lost
+summary: 18/18 passed
 result: reports/runs/<timestamp>/summary.json
 ```
 
@@ -165,6 +176,10 @@ result: reports/runs/<timestamp>/summary.json
 | `withdraw_pending_refund` | 已发货 89 元，预置 `pending` 申请 | 第二轮“确认撤回” | 申请变为 `withdrawn`，订单不变，确认记录 `consumed` |
 | `withdraw_without_refund` | 已发货 89 元，无售后申请 | 无确认，服务端预检拒绝 | `NO_ACTIVE_REFUND`，零写入 |
 | `withdraw_already_withdrawn` | 已发货 89 元，预置 `withdrawn` 申请 | 无确认，服务端预检拒绝 | `NO_ACTIVE_REFUND`，申请原样保留 |
+| `fault_cancel_response_lost` | 已付款 159 元，1 小时前付款 | 显式 `approve`，提交后丢弃响应 | 订单取消、生成退款；恢复为 `executed`，重放不新增行 |
+| `fault_refund_response_lost` | 已发货 89 元，1 小时前发货 | 显式 `approve`，提交后丢弃响应 | 申请 `pending`，订单仍 `shipped`；重放不新增行 |
+| `fault_withdraw_response_lost` | 已发货 89 元，预置 `pending` 申请 | 显式 `approve`，提交后丢弃响应 | 申请 `withdrawn`，金额不变；重放不新增行 |
+| `fault_chat_cancel_response_lost` | 已付款 129 元，30 分钟前付款 | 第二轮“确认取消”，整轮回复丢弃 | 订单取消、生成退款；恢复为 `executed`，重放不新增行 |
 
 固定业务时钟是 `2026-11-03T10:00:00+00:00`，结果可重复。
 
@@ -306,7 +321,7 @@ send_message("算了，不申请了")
 
 | 文件 | 职责 |
 |---|---|
-| `eval/dev_cases.jsonl` | 14 条用例 |
+| `eval/dev_cases.jsonl` | 18 条用例 |
 | `eval/case_schema.py` | 加载并校验订单、工具调用、预置申请、确认方式和期望结果 |
 | `eval/fixtures.py` | 隔离数据库、固定时钟、写入付款/发货时间和预置申请 |
 | `eval/harness.py` | 脚本化模型客户端，执行显式确认、自然语言确认或拒绝路径 |

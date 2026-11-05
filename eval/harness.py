@@ -10,9 +10,17 @@ from types import SimpleNamespace
 from openai.types.chat import ChatCompletionMessage
 
 from app.harness.conversation import decide_confirmation, new_conversation, send_message
+from app.harness.recovery import describe_recovery
 from eval.case_schema import EvalCase
+from eval.fault_injection import FaultInjector, ResponseLost
 from eval.fixtures import FIXED_NOW, isolated_database, seed_case_order
-from eval.oracle import business_result_ok, detect_unconfirmed_write, evaluate
+from eval.oracle import (
+    business_result_ok,
+    check,
+    count_write_rows,
+    detect_unconfirmed_write,
+    evaluate,
+)
 
 
 class ScriptedClient:
@@ -99,6 +107,231 @@ def _verdict(db_path: Path, case: EvalCase) -> dict:
     }
 
 
+def _fault_checks(
+    *,
+    case: EvalCase,
+    injector: FaultInjector,
+    recovery: dict,
+    replay: dict,
+    committed: dict,
+    after: dict,
+) -> list[dict]:
+    """故障用例的公共判定：注入确实发生、恢复答对、重放不写。"""
+    return [
+        check("fault.triggered", injector.triggered, True),
+        check("fault.fired_times", injector.fired, 1),
+        check("recovery.state", recovery.get("state"), case.expected["recovery_state"]),
+        check(
+            "recovery.result_status",
+            (recovery.get("result") or {}).get("status"),
+            case.expected["recovery_result_status"],
+        ),
+        check("replay.error", replay.get("error"), None),
+        check("replay.no_new_write", after == committed, True),
+    ]
+
+
+def _run_explicit_decision(
+    *,
+    case: EvalCase,
+    context: dict,
+    pending: dict,
+    db_path: Path,
+    response: dict,
+    started: float,
+) -> dict:
+    """显式确认路径；配置了故障时额外验证恢复查询与重放。"""
+    confirmation_id = pending["confirmation_id"]
+
+    def decide() -> dict:
+        return decide_confirmation(
+            context=context,
+            confirmation_id=confirmation_id,
+            decision=case.confirmation["decision"],
+            now=FIXED_NOW,
+        )
+
+    base = {
+        "case_id": case.case_id,
+        "outcome": case.expected["outcome"],
+        "confirmation_mode": "explicit",
+    }
+
+    if case.fault is None:
+        decision = decide()
+        oracle_result = evaluate(db_path, case)
+        return {
+            **base,
+            "passed": oracle_result["passed"],
+            "checks": oracle_result["checks"],
+            **_verdict(db_path, case),
+            "reply": response.get("reply"),
+            "pending_action": sanitize_pending(pending),
+            "decision_reply": decision.get("reply"),
+            "decision_error": decision.get("error"),
+            "duration_ms": _elapsed_ms(started),
+        }
+
+    injector = FaultInjector(case.fault)
+    decision = None
+    try:
+        decision = injector.after_commit(
+            tool=pending["tool"],
+            confirmation_id=confirmation_id,
+            call=decide,
+        )
+    except ResponseLost:
+        # 业务写入已经提交，丢的只是响应；恢复过程不重新执行业务逻辑。
+        decision = None
+
+    # 提交之后、重放之前的快照：重放不得新增任何业务行。
+    committed = count_write_rows(db_path, case)
+    # 用户重连后先问「上次到底成了没有」，随后可能重复点一次确认。
+    recovery = describe_recovery(
+        user_id=case.user_id,
+        session_id=context["session_id"],
+        thread_id=context["thread_id"],
+        now=FIXED_NOW,
+    )
+    replay = decide()
+    after = count_write_rows(db_path, case)
+
+    extra_checks = _fault_checks(
+        case=case,
+        injector=injector,
+        recovery=recovery,
+        replay=replay,
+        committed=committed,
+        after=after,
+    )
+    oracle_result = evaluate(db_path, case)
+    return {
+        **base,
+        "passed": oracle_result["passed"] and all(item["ok"] for item in extra_checks),
+        "checks": oracle_result["checks"] + extra_checks,
+        **_verdict(db_path, case),
+        "reply": response.get("reply"),
+        "pending_action": sanitize_pending(pending),
+        "decision_reply": decision.get("reply") if decision is not None else None,
+        "decision_error": "RESPONSE_LOST" if decision is None else decision.get("error"),
+        "fault": {
+            "point": case.fault.point,
+            "fired": injector.fired,
+        },
+        "recovery": recovery,
+        "replay_reply": replay.get("reply"),
+        "write_rows_after_first_commit": committed,
+        "write_rows_after_replay": after,
+        "duration_ms": _elapsed_ms(started),
+    }
+
+
+def _run_chat_decision(
+    *,
+    case: EvalCase,
+    context: dict,
+    pending: dict,
+    db_path: Path,
+    client,
+    response: dict,
+    started: float,
+) -> dict:
+    """自然语言确认路径；故障注入点包住整轮 send_message。"""
+    confirmation_id = pending["confirmation_id"]
+
+    def send_confirmation() -> dict:
+        return send_message(
+            context=context,
+            message=case.confirmation["message"],
+            client=client,
+            now=FIXED_NOW,
+        )
+
+    base = {
+        "case_id": case.case_id,
+        "outcome": case.expected["outcome"],
+        "confirmation_mode": "chat",
+    }
+
+    if case.fault is None:
+        confirmation_response = send_confirmation()
+        oracle_result = evaluate(db_path, case)
+        return {
+            **base,
+            "passed": oracle_result["passed"],
+            "checks": oracle_result["checks"],
+            **_verdict(db_path, case),
+            "reply": response.get("reply"),
+            "confirmation_reply": confirmation_response.get("reply"),
+            "pending_action": sanitize_pending(pending),
+            "remaining_pending_action": sanitize_pending(
+                confirmation_response.get("pending_action")
+            ),
+            "duration_ms": _elapsed_ms(started),
+        }
+
+    injector = FaultInjector(case.fault)
+    confirmation_response = None
+    try:
+        confirmation_response = injector.after_commit(
+            tool=pending["tool"],
+            confirmation_id=confirmation_id,
+            call=send_confirmation,
+        )
+    except ResponseLost:
+        # 确认已经提交，丢的是整轮回复；恢复过程不重新执行业务逻辑。
+        confirmation_response = None
+
+    committed = count_write_rows(db_path, case)
+    recovery = describe_recovery(
+        user_id=case.user_id,
+        session_id=context["session_id"],
+        thread_id=context["thread_id"],
+        now=FIXED_NOW,
+    )
+    # 恢复后已无待确认记录，再发一条消息只会得到普通回复；
+    # 重放改走显式确认接口，验证同一确认编号不会被二次执行。
+    replay = decide_confirmation(
+        context=context,
+        confirmation_id=confirmation_id,
+        decision="approve",
+        now=FIXED_NOW,
+    )
+    after = count_write_rows(db_path, case)
+
+    extra_checks = _fault_checks(
+        case=case,
+        injector=injector,
+        recovery=recovery,
+        replay=replay,
+        committed=committed,
+        after=after,
+    )
+    oracle_result = evaluate(db_path, case)
+    return {
+        **base,
+        "passed": oracle_result["passed"] and all(item["ok"] for item in extra_checks),
+        "checks": oracle_result["checks"] + extra_checks,
+        **_verdict(db_path, case),
+        "reply": response.get("reply"),
+        "confirmation_reply": (
+            confirmation_response.get("reply") if confirmation_response is not None else None
+        ),
+        "confirmation_error": "RESPONSE_LOST" if confirmation_response is None else None,
+        "pending_action": sanitize_pending(pending),
+        "remaining_pending_action": None,
+        "fault": {
+            "point": case.fault.point,
+            "fired": injector.fired,
+        },
+        "recovery": recovery,
+        "replay_reply": replay.get("reply"),
+        "write_rows_after_first_commit": committed,
+        "write_rows_after_replay": after,
+        "duration_ms": _elapsed_ms(started),
+    }
+
+
 def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
     """在独立数据库中执行一条用例，并用 Oracle 判定最终状态。"""
     started = monotonic()
@@ -166,49 +399,24 @@ def run_case(case: EvalCase, *, trace_path: Path | None = None) -> dict:
                     }
 
                 if mode == "explicit":
-                    decision = decide_confirmation(
+                    return _run_explicit_decision(
+                        case=case,
                         context=context,
-                        confirmation_id=pending["confirmation_id"],
-                        decision=case.confirmation["decision"],
-                        now=FIXED_NOW,
+                        pending=pending,
+                        db_path=db_path,
+                        response=response,
+                        started=started,
                     )
-                    oracle_result = evaluate(db_path, case)
-                    return {
-                        "case_id": case.case_id,
-                        "outcome": case.expected["outcome"],
-                        "confirmation_mode": "explicit",
-                        "passed": oracle_result["passed"],
-                        "checks": oracle_result["checks"],
-                        **_verdict(db_path, case),
-                        "reply": response.get("reply"),
-                        "pending_action": sanitize_pending(pending),
-                        "decision_reply": decision.get("reply"),
-                        "decision_error": decision.get("error"),
-                        "duration_ms": _elapsed_ms(started),
-                    }
 
-                confirmation_response = send_message(
+                return _run_chat_decision(
+                    case=case,
                     context=context,
-                    message=case.confirmation["message"],
+                    pending=pending,
+                    db_path=db_path,
                     client=client,
-                    now=FIXED_NOW,
+                    response=response,
+                    started=started,
                 )
-                oracle_result = evaluate(db_path, case)
-                return {
-                    "case_id": case.case_id,
-                    "outcome": case.expected["outcome"],
-                    "confirmation_mode": "chat",
-                    "passed": oracle_result["passed"],
-                    "checks": oracle_result["checks"],
-                    **_verdict(db_path, case),
-                    "reply": response.get("reply"),
-                    "confirmation_reply": confirmation_response.get("reply"),
-                    "pending_action": sanitize_pending(pending),
-                    "remaining_pending_action": sanitize_pending(
-                        confirmation_response.get("pending_action")
-                    ),
-                    "duration_ms": _elapsed_ms(started),
-                }
     except Exception as exc:
         return {
             "case_id": case.case_id,

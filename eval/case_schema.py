@@ -7,12 +7,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from eval.fault_injection import FaultConfig, parse_fault
+
 DEFAULT_CASES_PATH = Path(__file__).with_name("dev_cases.jsonl")
 OUTCOMES = {"canceled", "rejected", "refund_submitted", "refund_withdrawn"}
 CONFIRMATION_MODES = {"explicit", "chat", "none"}
 WRITE_TOOLS = {"cancel_order", "prepare_refund_confirmation", "withdraw_refund"}
 REASON_TOOLS = {"cancel_order", "prepare_refund_confirmation"}
 EXISTING_REFUND_STATUSES = {"pending", "withdrawn", "completed"}
+# 完成一次高风险写入后，恢复查询应返回的历史结果状态。
+RECOVERY_RESULT_STATUS_BY_OUTCOME = {
+    "canceled": "canceled",
+    "refund_submitted": "submitted",
+    "refund_withdrawn": "withdrawn",
+}
 CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -26,6 +34,7 @@ class EvalCase:
     confirmation: dict[str, Any]
     expected: dict[str, Any]
     existing_refund: dict[str, Any] | None = None
+    fault: FaultConfig | None = None
 
 
 def _require(condition: bool, message: str) -> None:
@@ -187,6 +196,21 @@ def _parse_case(data: dict) -> EvalCase:
         }
     else:
         normalized_confirmation = {"mode": "none"}
+
+    try:
+        fault = parse_fault(data.get("fault"))
+    except ValueError as exc:
+        raise ValueError(f"{case_id}: {exc}") from exc
+    if fault is not None:
+        _require(
+            normalized_confirmation["mode"] != "none",
+            f"{case_id}: 故障注入用例必须包含确认动作",
+        )
+        decided = normalized_confirmation.get("decision") or normalized_confirmation.get("intent")
+        _require(
+            decided == "approve",
+            f"{case_id}: 故障注入用例只在批准路径上验证恢复",
+        )
 
     expected = data.get("expected")
     _require(isinstance(expected, dict), f"{case_id}: expected 必须是对象")
@@ -397,6 +421,21 @@ def _parse_case(data: dict) -> EvalCase:
                 f"{case_id}: 用户拒绝后确认状态必须是 rejected",
             )
 
+    if fault is None:
+        _require(
+            "recovery_state" not in expected and "recovery_result_status" not in expected,
+            f"{case_id}: 没有故障注入时不应声明恢复期望",
+        )
+    else:
+        _require(
+            expected.get("recovery_state") == "executed",
+            f"{case_id}: 故障注入用例必须声明 recovery_state 为 executed",
+        )
+        _require(
+            expected.get("recovery_result_status") == RECOVERY_RESULT_STATUS_BY_OUTCOME[outcome],
+            f"{case_id}: recovery_result_status 必须是 {RECOVERY_RESULT_STATUS_BY_OUTCOME[outcome]}",
+        )
+
     normalized_expected = dict(expected)
     normalized_expected["other_orders_canceled"] = other_orders
 
@@ -409,6 +448,7 @@ def _parse_case(data: dict) -> EvalCase:
         confirmation=normalized_confirmation,
         expected=normalized_expected,
         existing_refund=normalized_existing,
+        fault=fault,
     )
 
 

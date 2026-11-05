@@ -12,13 +12,40 @@ class CaseView(Protocol):
     expected: dict[str, Any]
 
 
-def _check(name: str, actual, expected) -> dict:
+def check(name: str, actual, expected) -> dict:
     return {
         "name": name,
         "ok": actual == expected,
         "actual": actual,
         "expected": expected,
     }
+
+
+def count_write_rows(db_path: Path, case: CaseView) -> dict[str, int]:
+    """统计本条用例相关表的行数，用于证明重放没有产生第二次写入。"""
+    conn = sqlite3.connect(db_path)
+    try:
+        params = (case.order["order_id"], case.user_id)
+        return {
+            "orders": conn.execute(
+                "SELECT COUNT(*) FROM orders WHERE order_id = ? AND user_id = ?",
+                params,
+            ).fetchone()[0],
+            "refund_requests": conn.execute(
+                "SELECT COUNT(*) FROM refund_requests WHERE order_id = ? AND user_id = ?",
+                params,
+            ).fetchone()[0],
+            "confirmations": conn.execute(
+                "SELECT COUNT(*) FROM confirmations WHERE order_id = ? AND user_id = ?",
+                params,
+            ).fetchone()[0],
+            "operation_logs": conn.execute(
+                "SELECT COUNT(*) FROM operation_logs WHERE order_id = ? AND user_id = ?",
+                params,
+            ).fetchone()[0],
+        }
+    finally:
+        conn.close()
 
 
 def detect_unconfirmed_write(db_path: Path, case: CaseView) -> bool:
@@ -80,14 +107,14 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
             (case.order["order_id"], case.user_id),
         ).fetchone()
         checks.append(
-            _check(
+            check(
                 "order.status",
                 order["status"] if order is not None else None,
                 expected["order_status"],
             )
         )
         checks.append(
-            _check(
+            check(
                 "order.paid_amount_cents",
                 order["paid_amount_cents"] if order is not None else None,
                 case.order["paid_amount_cents"],
@@ -115,14 +142,14 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
             matching_refunds = []
 
         checks.append(
-            _check(
+            check(
                 "refund.cancellation_count",
                 len(cancellations),
                 expected_cancellations,
             )
         )
         checks.append(
-            _check(
+            check(
                 "refund.after_sales_count",
                 len(after_sales),
                 expected_after_sales,
@@ -131,21 +158,21 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
         if expected["refund_count"] > 0:
             refund = matching_refunds[0] if len(matching_refunds) == 1 else None
             checks.append(
-                _check(
+                check(
                     "refund.kind",
                     refund["kind"] if refund is not None else None,
                     expected["refund_kind"],
                 )
             )
             checks.append(
-                _check(
+                check(
                     "refund.amount_cents",
                     refund["amount_cents"] if refund is not None else None,
                     expected["refund_amount_cents"],
                 )
             )
             checks.append(
-                _check(
+                check(
                     "refund.status",
                     refund["status"] if refund is not None else None,
                     expected["refund_status"],
@@ -158,11 +185,11 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
         ).fetchall()
         confirmation = confirmations[0] if len(confirmations) == 1 else None
         checks.append(
-            _check("confirmation.count", len(confirmations), expected["confirmation_count"])
+            check("confirmation.count", len(confirmations), expected["confirmation_count"])
         )
         if expected["confirmation_count"] == 1:
             checks.append(
-                _check(
+                check(
                     "confirmation.status",
                     confirmation["status"] if confirmation is not None else None,
                     expected.get("confirmation_status"),
@@ -170,7 +197,7 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
             )
             if "confirmation_tool" in expected:
                 checks.append(
-                    _check(
+                    check(
                         "confirmation.tool",
                         confirmation["tool"] if confirmation is not None else None,
                         expected["confirmation_tool"],
@@ -186,7 +213,7 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
                     if isinstance(saved, dict):
                         saved_status = saved.get("status")
                 checks.append(
-                    _check(
+                    check(
                         "confirmation.result_status",
                         saved_status,
                         expected["confirmation_result_status"],
@@ -197,25 +224,25 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
             "SELECT * FROM operation_logs WHERE order_id = ? AND user_id = ?",
             (case.order["order_id"], case.user_id),
         ).fetchall()
-        checks.append(_check("operation_logs.count", len(logs), expected["operation_logs"]))
+        checks.append(check("operation_logs.count", len(logs), expected["operation_logs"]))
         if expected["operation_logs"] == 1:
             log = logs[0] if len(logs) == 1 else None
             checks.append(
-                _check(
+                check(
                     "operation_logs.previous_status",
                     log["previous_status"] if log is not None else None,
                     case.order["status"],
                 )
             )
             checks.append(
-                _check(
+                check(
                     "operation_logs.new_status",
                     log["new_status"] if log is not None else None,
                     expected["order_status"],
                 )
             )
             checks.append(
-                _check(
+                check(
                     "operation_logs.amount_cents",
                     log["amount_cents"] if log is not None else None,
                     expected.get("refund_amount_cents", 0),
@@ -230,7 +257,7 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
             (case.user_id, case.order["order_id"]),
         ).fetchone()[0]
         checks.append(
-            _check(
+            check(
                 "other_orders.canceled",
                 other_canceled,
                 expected["other_orders_canceled"],
