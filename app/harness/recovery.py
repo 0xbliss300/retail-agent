@@ -13,6 +13,7 @@ READ_ONLY_TOOLS = frozenset({
     "get_order",
     "get_policy",
     "check_refund_eligibility",
+    "list_refund_eligibility",
     "get_refund_status",
 })
 

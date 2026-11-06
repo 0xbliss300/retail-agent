@@ -15,6 +15,7 @@ from app.business.tools import (
     get_policy,
     get_refund_status,
     list_orders,
+    list_refund_eligibility,
     list_refunds,
 )
 from app.harness.confirmation import (
@@ -70,6 +71,17 @@ def _resolve_handler(
             user_id=user_id,
             status=args.get("status"),
             limit=args.get("limit", 10),
+            offset=args.get("offset", 0),
+        )
+
+    if name == "list_refund_eligibility":
+        if set(args) - {"limit", "offset"}:
+            raise _InvalidArguments
+        # 分页边界由 Service 统一检查，直接调用服务也不能绕过。
+        return lambda: list_refund_eligibility(
+            user_id=user_id,
+            now=now if now is not None else datetime.now(UTC),
+            limit=args.get("limit", 20),
             offset=args.get("offset", 0),
         )
 

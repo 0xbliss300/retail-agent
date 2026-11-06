@@ -39,6 +39,9 @@ POLICY_PROMPT = (
 )
 
 REFUND_PROMPT = (
+    "用户询问本人有哪些订单可以申请退款、哪些订单满足退款条件时，"
+    "调用list_refund_eligibility，一次返回全部订单的资格，不要逐单调用check_refund_eligibility。"
+    "eligible_count只统计本次返回的订单；has_more=true时说明还有订单未覆盖，下一页使用next_offset。"
     "判断具体订单能否申请退款时，调用 check_refund_eligibility。"
     "缺少订单号时先追问。"
     "ok=True 只表示检查完成，是否符合条件看 eligible。"

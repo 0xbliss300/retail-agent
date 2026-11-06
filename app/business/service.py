@@ -24,6 +24,7 @@ from app.business.repository import (
     get_refund_settlement,
     insert_refund_request,
     insert_refund_settlement,
+    list_active_refund_order_ids,
     list_refunds_for_user,
     refund_order_in_transaction,
     withdraw_refund_in_transaction,
@@ -153,6 +154,41 @@ def get_policy(*, topic: str) -> dict:
     return {"ok": True, "topic": topic, "policy": policy}
 
 
+def _refund_judgement(
+    order: dict,
+    *,
+    has_active_refund: bool,
+    now: datetime,
+) -> dict:
+    """单笔订单的资格判定；活跃退款这一事实由调用方在各自的读取范围内取得。"""
+    window = check_refund_window(
+        status=order["status"],
+        shipped_at=order["shipped_at"],
+        delivered_at=order["delivered_at"],
+        now=now,
+    )
+    if not window["window_open"]:
+        return {
+            "eligible": False,
+            "policy_code": window["code"],
+            "reason": window["reason"],
+        }
+
+    if has_active_refund:
+        return {
+            "eligible": False,
+            "policy_code": "ACTIVE_REFUND_EXISTS",
+            "reason": "该订单已有处理中的售后退款申请，不可重复申请。",
+        }
+
+    return {
+        "eligible": True,
+        "policy_code": "ELIGIBLE",
+        "reason": "当前符合退款申请条件，提交申请仍需用户确认。",
+        "amount_cents": order["paid_amount_cents"],
+    }
+
+
 def check_refund_eligibility(
     *,
     user_id: str,
@@ -169,40 +205,69 @@ def check_refund_eligibility(
     if order is None:
         return {"ok": False, "error": "ORDER_NOT_FOUND"}
 
-    window = check_refund_window(
-        status=order["status"],
-        shipped_at=order["shipped_at"],
-        delivered_at=order["delivered_at"],
-        now=now,
-    )
-    if not window["window_open"]:
-        return {
-            "ok": True,
-            "eligible": False,
-            "policy_code": window["code"],
-            "reason": window["reason"],
-        }
-
     active_refund = get_active_refund(
         user_id=user_id, 
         order_id=order_id, 
         conn=conn
     )
-    if active_refund is not None:
-        return {
-            "ok": True,
-            "eligible": False,
-            "policy_code": "ACTIVE_REFUND_EXISTS",
-            "reason": "该订单已有处理中的售后退款申请，不可重复申请。",
-        }
+    return {
+        "ok": True,
+        **_refund_judgement(
+            order,
+            has_active_refund=active_refund is not None,
+            now=now,
+        ),
+    }
+
+
+def list_refund_eligibility(
+    *,
+    user_id: str,
+    now: datetime,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict:
+    """批量判断本人订单的退款资格；整页只用两条查询，不逐单往返。
+
+    eligible_count 只统计本次返回的订单；has_more=true 时还有订单未覆盖。
+    """
+    if not isinstance(user_id, str) or not user_id.strip():
+        return {"ok": False, "error": "MISSING_CONTEXT"}
+    if (
+        type(limit) is not int or not 1 <= limit <= 50
+        or type(offset) is not int or not 0 <= offset <= 2**63 - 1
+    ):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now 必须包含时区")
+
+    rows = get_orders_for_user(user_id=user_id, limit=limit + 1, offset=offset)
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    active_order_ids = list_active_refund_order_ids(user_id=user_id)
+
+    orders = []
+    for order in page:
+        orders.append({
+            "order_id": order["order_id"],
+            "status": order["status"],
+            **_refund_judgement(
+                order,
+                has_active_refund=order["order_id"] in active_order_ids,
+                now=now,
+            ),
+        })
 
     return {
         "ok": True,
-        "eligible": True,
-        "policy_code": "ELIGIBLE",
-        "reason": "当前符合退款申请条件，提交申请仍需用户确认。",
-        "amount_cents": order["paid_amount_cents"],
+        "orders": orders,
+        "eligible_count": sum(1 for item in orders if item["eligible"]),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + limit if has_more else None,
     }
+
 
 def get_confirmation(
     *,

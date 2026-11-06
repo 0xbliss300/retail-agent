@@ -173,6 +173,32 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "list_refund_eligibility",
+            "description": (
+                "一次返回当前用户本人订单的退款资格，用于回答“我有哪些订单可以退款”。"
+                "返回每笔订单的状态、eligible、policy_code 和 reason；"
+                "eligible_count 只统计本次返回的订单，has_more 为 true 时还有订单未覆盖。"
+                "仅查询资格，不提交申请、不执行退款。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer", "minimum": 1, "maximum": 50,
+                        "description": "每页订单数，默认20，最多50。",
+                    },
+                    "offset": {
+                        "type": "integer", "minimum": 0, "maximum": 9223372036854775807,
+                        "description": "跳过的本人订单数，默认0；下一页使用next_offset。",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "prepare_refund_confirmation",
             "description": (
                 "用户明确要求申请退款时，准备待确认操作。"
@@ -276,6 +302,21 @@ def check_refund_eligibility(
         user_id=user_id,
         order_id=order_id,
         now=now
+    )
+
+# 批量查询本人订单的退款资格
+def list_refund_eligibility(
+        user_id: str,
+        *,
+        now: datetime,
+        limit: int = 20,
+        offset: int = 0,
+) -> dict:
+    return service.list_refund_eligibility(
+        user_id=user_id,
+        now=now,
+        limit=limit,
+        offset=offset,
     )
 
 # 用于agent调用获取状态

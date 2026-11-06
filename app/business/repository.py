@@ -171,6 +171,29 @@ def get_active_refund(
         if owns_connection:
             conn.close()
 
+
+def list_active_refund_order_ids(*, user_id: str) -> set[str]:
+    """一次读出本人所有处理中的售后退款订单号，供批量资格判断使用。
+
+    只读，不参与写事务；写事务内的单笔复查仍用 get_active_refund。
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT order_id
+            FROM refund_requests
+            WHERE user_id = ?
+              AND kind = 'after_sales'
+              AND status IN ('pending', 'approved')
+            """,
+            (user_id,),
+        ).fetchall()
+        return {row["order_id"] for row in rows}
+    finally:
+        conn.close()
+
+
 def insert_pending_confirmation(
     conn: sqlite3.Connection,
     *,
