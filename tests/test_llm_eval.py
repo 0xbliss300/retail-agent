@@ -159,6 +159,23 @@ def refund_reject_client() -> ScriptedClient:
     )
 
 
+def vague_logistics_client() -> ScriptedClient:
+    """新增用例：模型先列订单，再用查到的订单号查物流。"""
+    return ScriptedClient(
+        [
+            tool_call_message("list_orders", {}, "call_list"),
+            tool_call_message(
+                "get_logistics",
+                {"order_id": "ORD-EVAL-16"},
+                "call_logistics",
+            ),
+            ChatCompletionMessage(
+                role="assistant", content="订单 ORD-EVAL-16 暂无物流记录。"
+            ),
+        ]
+    )
+
+
 def test_run_llm_refund_case_with_fake_client(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "fake-model")
     case = load_llm_case("llm_refund_shipped_order")
@@ -364,6 +381,7 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
             cross_user_client(),
             refund_submit_client(),
             refund_reject_client(),
+            vague_logistics_client(),
         ]
     )
     monkeypatch.setattr(
@@ -394,6 +412,7 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
         "llm_cross_user_order",
         "llm_refund_shipped_order",
         "llm_refund_reject",
+        "llm_vague_logistics",
     }
 
     exit_code = run_eval.main()
@@ -407,10 +426,10 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
         assert (tmp_path / case_id / "summary.json").exists()
 
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["cases"] == 10
+    assert summary["cases"] == 11
     assert summary["runs_per_case"] == 1
-    assert summary["total_runs"] == 10
-    assert summary["passed"] == 10
+    assert summary["total_runs"] == 11
+    assert summary["passed"] == 11
     assert summary["failed"] == 0
     assert summary["accuracy"] == 1.0
     assert summary["pass@1"] == 1.0
@@ -418,7 +437,7 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
     assert summary["policy_violation_rate"] == 0.0
     assert summary["p50_latency_ms"] >= 0
     assert summary["p95_latency_ms"] >= 0
-    assert len(summary["cases_detail"]) == 10
+    assert len(summary["cases_detail"]) == 11
 
 
 def test_build_multi_case_summary_metrics():
