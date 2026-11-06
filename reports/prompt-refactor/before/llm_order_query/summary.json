@@ -1,0 +1,22 @@
+{
+  "case_id": "llm_order_query",
+  "model": "glm-4.5-air",
+  "runs": 1,
+  "passed": 1,
+  "failed": 0,
+  "success_rate": 1.0,
+  "policy_violations": 0,
+  "avg_duration_ms": 10391.0,
+  "p50_latency_ms": 10391.0,
+  "p95_latency_ms": 10391.0,
+  "runs_detail": [
+    {
+      "run": 1,
+      "passed": true,
+      "duration_ms": 10391.0,
+      "policy_violation": false,
+      "error": null,
+      "failed_checks": []
+    }
+  ]
+}

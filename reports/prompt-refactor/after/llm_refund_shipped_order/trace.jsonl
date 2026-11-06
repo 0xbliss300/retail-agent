@@ -1,0 +1,10 @@
+{"ts":"2026-11-06T09:48:17.153264+00:00","event":"agent.start","run_id":"run_aa227e8194224916ba687478924f01e4","source":"chat","session_id":"sess_844020c3cd344bd0962aeb15485012b1","thread_id":"thread_46b5f7971f794678a16adcfb496399f1","message_chars":23}
+{"ts":"2026-11-06T09:48:17.156685+00:00","event":"model.start","run_id":"run_aa227e8194224916ba687478924f01e4","step":0,"message_count":2}
+{"ts":"2026-11-06T09:48:19.411714+00:00","event":"model.end","run_id":"run_aa227e8194224916ba687478924f01e4","step":0,"status":"ok","duration_ms":2250.0,"tool_call_count":1,"token_chars":0}
+{"ts":"2026-11-06T09:48:19.424232+00:00","event":"tool.call","run_id":"run_aa227e8194224916ba687478924f01e4","tool":"prepare_refund_confirmation","ok":true,"status":"ok","error":null,"attempts":1,"duration_ms":16.0}
+{"ts":"2026-11-06T09:48:19.429571+00:00","event":"confirmation.prepared","run_id":"run_aa227e8194224916ba687478924f01e4","tool":"prepare_refund_confirmation","order_id":"ORD-EVAL-14","expires_at":"2026-11-03T10:10:00+00:00"}
+{"ts":"2026-11-06T09:48:19.439075+00:00","event":"agent.end","run_id":"run_aa227e8194224916ba687478924f01e4","source":"chat","status":"ok","duration_ms":2296.0,"reply_chars":164,"history_saved":true,"pending":true}
+{"ts":"2026-11-06T09:48:19.444077+00:00","event":"agent.start","run_id":"run_d320d8dac5c341f2bb162f7df76c91fc","source":"chat","session_id":"sess_844020c3cd344bd0962aeb15485012b1","thread_id":"thread_46b5f7971f794678a16adcfb496399f1","message_chars":4}
+{"ts":"2026-11-06T09:48:22.015101+00:00","event":"confirmation.intent","run_id":"run_d320d8dac5c341f2bb162f7df76c91fc","tool":"create_refund","intent":"approve"}
+{"ts":"2026-11-06T09:48:22.026162+00:00","event":"confirmation.decision","run_id":"run_d320d8dac5c341f2bb162f7df76c91fc","source":"chat","tool":"create_refund","decision":"approve","status":"submitted","error":null}
+{"ts":"2026-11-06T09:48:22.036273+00:00","event":"agent.end","run_id":"run_d320d8dac5c341f2bb162f7df76c91fc","source":"chat","status":"ok","duration_ms":2594.0,"reply_chars":101,"history_saved":true,"pending":false}

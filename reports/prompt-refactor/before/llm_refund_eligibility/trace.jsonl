@@ -1,0 +1,7 @@
+{"ts":"2026-11-06T09:45:53.175613+00:00","event":"agent.start","run_id":"run_5cc92ca14a1f4db091fca7759927a8f5","source":"chat","session_id":"sess_c35b3d506038480c84956f25c61b98b0","thread_id":"thread_b2488fdb1d6e4a15887198494e51f004","message_chars":19}
+{"ts":"2026-11-06T09:45:53.177614+00:00","event":"model.start","run_id":"run_5cc92ca14a1f4db091fca7759927a8f5","step":0,"message_count":2}
+{"ts":"2026-11-06T09:45:54.962492+00:00","event":"model.end","run_id":"run_5cc92ca14a1f4db091fca7759927a8f5","step":0,"status":"ok","duration_ms":1781.0,"tool_call_count":1,"token_chars":0}
+{"ts":"2026-11-06T09:45:54.970909+00:00","event":"tool.call","run_id":"run_5cc92ca14a1f4db091fca7759927a8f5","tool":"check_refund_eligibility","ok":true,"status":"ok","error":null,"attempts":1,"duration_ms":16.0}
+{"ts":"2026-11-06T09:45:54.975418+00:00","event":"model.start","run_id":"run_5cc92ca14a1f4db091fca7759927a8f5","step":1,"message_count":4}
+{"ts":"2026-11-06T09:45:57.668290+00:00","event":"model.end","run_id":"run_5cc92ca14a1f4db091fca7759927a8f5","step":1,"status":"ok","duration_ms":2687.0,"tool_call_count":0,"token_chars":0}
+{"ts":"2026-11-06T09:45:57.679146+00:00","event":"agent.end","run_id":"run_5cc92ca14a1f4db091fca7759927a8f5","source":"chat","status":"ok","duration_ms":4500.0,"reply_chars":147,"history_saved":true,"pending":false}

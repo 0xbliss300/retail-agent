@@ -1,0 +1,85 @@
+{
+  "case_id": "llm_cancel_reject",
+  "model": "glm-4.5-air",
+  "outcome": "rejected",
+  "passed": true,
+  "checks": [
+    {
+      "name": "order.status",
+      "ok": true,
+      "actual": "paid",
+      "expected": "paid"
+    },
+    {
+      "name": "order.paid_amount_cents",
+      "ok": true,
+      "actual": 12900,
+      "expected": 12900
+    },
+    {
+      "name": "refund.cancellation_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "refund.after_sales_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "confirmation.count",
+      "ok": true,
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "name": "confirmation.status",
+      "ok": true,
+      "actual": "rejected",
+      "expected": "rejected"
+    },
+    {
+      "name": "operation_logs.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "other_orders.canceled",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "trace.tool_call.1.cancel_order",
+      "ok": true,
+      "actual": [
+        {
+          "tool": "cancel_order",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "expected": {
+        "tool": "cancel_order",
+        "ok": true
+      }
+    }
+  ],
+  "policy_violation": false,
+  "replies": [
+    "取消订单 ORD-EVAL-7，原因：不想要了。执行后订单状态变为已取消。将生成129.00元的模拟取消退款流水，不发生真实资金划转。\n确认编号：cfm_df0b1990cc9e4361a95314c70b4b71f1\n有效期至：2026-11-03T10:10:00+00:00\n本次取消尚未执行。你可以说“确认取消”，或“算了，不取消了”。"
+  ],
+  "confirmation_reply": "已拒绝本次取消请求，本次未修改订单。",
+  "pending_action": {
+    "tool": "cancel_order",
+    "order_id": "ORD-EVAL-7",
+    "summary": "取消订单 ORD-EVAL-7，原因：不想要了。执行后订单状态变为已取消。将生成129.00元的模拟取消退款流水，不发生真实资金划转。",
+    "status": "pending",
+    "expires_at": "2026-11-03T10:10:00+00:00"
+  },
+  "remaining_pending_action": null,
+  "duration_ms": 9828.0
+}

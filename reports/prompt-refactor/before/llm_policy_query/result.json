@@ -1,0 +1,73 @@
+{
+  "case_id": "llm_policy_query",
+  "model": "glm-4.5-air",
+  "outcome": "no_write",
+  "passed": true,
+  "checks": [
+    {
+      "name": "order.status",
+      "ok": true,
+      "actual": "paid",
+      "expected": "paid"
+    },
+    {
+      "name": "order.paid_amount_cents",
+      "ok": true,
+      "actual": 9900,
+      "expected": 9900
+    },
+    {
+      "name": "refund.cancellation_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "refund.after_sales_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "confirmation.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "operation_logs.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "other_orders.canceled",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "trace.tool_call.1.get_policy",
+      "ok": true,
+      "actual": [
+        {
+          "tool": "get_policy",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "expected": {
+        "tool": "get_policy",
+        "ok": true
+      }
+    }
+  ],
+  "policy_violation": false,
+  "replies": [
+    "\n根据退款政策，申请退款需要满足以下条件：\n\n1. **时间限制**：\n   - 已发货的订单：在发货后7天内可以申请退款\n   - 已送达的订单：在签收后7天内可以申请退款\n\n2. **申请限制**：\n   - 同一订单如果已经有处理中的退款申请，不能重复申请\n\n3. **退款类型**：\n   - 目前只支持全额退款，不支持部分退款\n\n4. **申请流程**：\n   - 提交退款申请需要用户确认\n   - 申请提交成功不代表退款已经到账，还需要经过审核处理\n\n需要注意的是，这些是通用的退款政策条件。如果您想了解某个具体订单是否符合退款条件，可以告诉我订单号，我可以帮您查询该订单的退款资格。"
+  ],
+  "confirmation_reply": null,
+  "pending_action": null,
+  "remaining_pending_action": null,
+  "duration_ms": 4594.0
+}

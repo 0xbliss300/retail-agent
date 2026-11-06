@@ -1,0 +1,74 @@
+{
+  "case_id": "llm_cancel_shipped_order",
+  "model": "glm-4.5-air",
+  "outcome": "rejected",
+  "passed": true,
+  "checks": [
+    {
+      "name": "order.status",
+      "ok": true,
+      "actual": "shipped",
+      "expected": "shipped"
+    },
+    {
+      "name": "order.paid_amount_cents",
+      "ok": true,
+      "actual": 15900,
+      "expected": 15900
+    },
+    {
+      "name": "refund.cancellation_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "refund.after_sales_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "confirmation.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "operation_logs.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "other_orders.canceled",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "trace.tool_call.1.cancel_order",
+      "ok": true,
+      "actual": [
+        {
+          "tool": "cancel_order",
+          "ok": false,
+          "error": "POLICY_DENIED"
+        }
+      ],
+      "expected": {
+        "tool": "cancel_order",
+        "ok": false,
+        "error": "POLICY_DENIED"
+      }
+    }
+  ],
+  "policy_violation": false,
+  "replies": [
+    "\n很抱歉，您的订单 ORD-EVAL-6 无法取消。根据查询结果，该订单的状态是\"已发货\"，商品已经发出去了。\n\n根据取消政策，只有以下状态的订单可以取消：\n- 未付款的订单\n- 已付款但未发货，且付款时间不超过24小时的订单\n\n您的订单已发货，所以不符合取消条件。如果您确实不需要这个商品，建议您考虑：\n1. 等待收货后申请退货退款\n2. 如果订单还未送达，可以联系客服咨询是否有其他处理方式\n\n您需要我帮您查询退货退款的相关信息吗？"
+  ],
+  "confirmation_reply": null,
+  "pending_action": null,
+  "remaining_pending_action": null,
+  "duration_ms": 7828.0
+}

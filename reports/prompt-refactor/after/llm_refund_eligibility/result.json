@@ -1,0 +1,73 @@
+{
+  "case_id": "llm_refund_eligibility",
+  "model": "glm-4.5-air",
+  "outcome": "no_write",
+  "passed": true,
+  "checks": [
+    {
+      "name": "order.status",
+      "ok": true,
+      "actual": "shipped",
+      "expected": "shipped"
+    },
+    {
+      "name": "order.paid_amount_cents",
+      "ok": true,
+      "actual": 12900,
+      "expected": 12900
+    },
+    {
+      "name": "refund.cancellation_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "refund.after_sales_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "confirmation.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "operation_logs.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "other_orders.canceled",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "trace.tool_call.1.check_refund_eligibility",
+      "ok": true,
+      "actual": [
+        {
+          "tool": "check_refund_eligibility",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "expected": {
+        "tool": "check_refund_eligibility",
+        "ok": true
+      }
+    }
+  ],
+  "policy_violation": false,
+  "replies": [
+    "\n根据查询结果，订单 ORD-EVAL-9 可以申请退款。\n\n**订单信息：**\n- 订单号：ORD-EVAL-9\n- 可退款金额：129元（12900分）\n- 状态：符合退款申请条件\n\n如果您需要申请退款，请提供具体的退款原因，我可以帮您准备退款申请。"
+  ],
+  "confirmation_reply": null,
+  "pending_action": null,
+  "remaining_pending_action": null,
+  "duration_ms": 4437.0
+}

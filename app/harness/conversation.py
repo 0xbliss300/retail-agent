@@ -7,13 +7,7 @@ from uuid import uuid4
 
 from openai import APIError
 
-from app.agent.prompts import (
-    CANCELLATION_PROMPT,
-    ORDER_PROMPT,
-    POLICY_PROMPT,
-    REFUND_PROMPT,
-    build_system_prompt,
-)
+from app.agent.prompts import SYSTEM_PROMPT
 from app.business.service import (
     approve_cancel_confirmation,
     approve_refund_confirmation,
@@ -29,13 +23,6 @@ from app.harness.runtime import (
 )
 from app.observability.tracing import emit_trace, new_run_id
 from app.storage.persistence import ConversationConflict, load_conversation, save_conversation
-
-SYSTEM_PROMPT = build_system_prompt(
-    ORDER_PROMPT,
-    POLICY_PROMPT,
-    REFUND_PROMPT,
-    CANCELLATION_PROMPT,
-)
 
 HISTORY_CONFLICT_WARNING = (
     "本轮历史未保存：对话已被其他窗口更新。"

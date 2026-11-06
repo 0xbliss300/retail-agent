@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from openai.types.chat import ChatCompletionMessage
 
-from app.agent.prompts import ORDER_PROMPT, POLICY_PROMPT, build_system_prompt
+from app.agent.prompts import SYSTEM_PROMPT
 from app.agent.scope import SCOPE_REFUSAL, off_topic_reason
 from app.harness.runtime import create_messages, run_agent, stream_agent
 from app.harness.tool_executor import execute_tool
@@ -45,7 +45,7 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_clarification_then_query_keeps_history(self):
-        messages = create_messages(build_system_prompt(ORDER_PROMPT, POLICY_PROMPT))
+        messages = create_messages(SYSTEM_PROMPT)
         responses = [reply("请提供订单号"), reply(arguments='{"order_id":"ORD-1001"}'),
                      reply("订单已支付，实付99元")]
         with patch("app.harness.runtime.request_model", side_effect=responses) as model:
@@ -75,18 +75,18 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(execute_tool(call, "USER-001")["error"], error)
 
     def test_budget_stops_loop_and_sessions_are_separate(self):
-        messages = create_messages(build_system_prompt(ORDER_PROMPT, POLICY_PROMPT))
+        messages = create_messages(SYSTEM_PROMPT)
         with patch("app.harness.runtime.request_model",
                    return_value=reply(arguments='{"order_id":"ORD-1001"}')) as model:
             answer = run_agent("查订单", "USER-001", messages, None, max_steps=2)
         self.assertEqual(model.call_count, 2)
         self.assertIn("步数上限", answer)
         self.assertEqual(messages[-1], {"role": "assistant", "content": answer})
-        self.assertEqual(len(create_messages(build_system_prompt(ORDER_PROMPT, POLICY_PROMPT))), 1)
+        self.assertEqual(len(create_messages(SYSTEM_PROMPT)), 1)
 
     def test_off_topic_request_skips_model_entirely(self):
         """域外请求在运行时终止：0 次模型调用，历史只多一条确定性拒答。"""
-        messages = create_messages(build_system_prompt(ORDER_PROMPT))
+        messages = create_messages(SYSTEM_PROMPT)
         with patch("app.harness.runtime.request_model") as model:
             answer = run_agent("用 Python 写一个冒泡排序", "USER-001", messages, None)
         self.assertEqual(model.call_count, 0)
@@ -101,7 +101,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_sync_and_stream_share_one_execution_path(self):
         """同一场景两条入口必须给出相同回复与消息历史，防止规则只加到一条路径。"""
-        system_prompt = build_system_prompt(ORDER_PROMPT, POLICY_PROMPT)
+        system_prompt = SYSTEM_PROMPT
         text_reply = reply("你好")
         cases = [
             (

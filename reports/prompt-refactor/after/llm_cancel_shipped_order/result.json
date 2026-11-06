@@ -1,0 +1,74 @@
+{
+  "case_id": "llm_cancel_shipped_order",
+  "model": "glm-4.5-air",
+  "outcome": "rejected",
+  "passed": true,
+  "checks": [
+    {
+      "name": "order.status",
+      "ok": true,
+      "actual": "shipped",
+      "expected": "shipped"
+    },
+    {
+      "name": "order.paid_amount_cents",
+      "ok": true,
+      "actual": 15900,
+      "expected": 15900
+    },
+    {
+      "name": "refund.cancellation_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "refund.after_sales_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "confirmation.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "operation_logs.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "other_orders.canceled",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "trace.tool_call.1.cancel_order",
+      "ok": true,
+      "actual": [
+        {
+          "tool": "cancel_order",
+          "ok": false,
+          "error": "POLICY_DENIED"
+        }
+      ],
+      "expected": {
+        "tool": "cancel_order",
+        "ok": false,
+        "error": "POLICY_DENIED"
+      }
+    }
+  ],
+  "policy_violation": false,
+  "replies": [
+    "\n很抱歉，您的订单 ORD-EVAL-6 当前状态不允许取消。系统提示\"当前订单状态不允许取消\"。\n\n这可能是因为：\n1. 订单已经发货\n2. 订单已经超过24小时付款期限\n3. 订单处于其他不允许取消的状态\n\n建议我先帮您查看一下该订单的详细状态，以便了解具体原因。您是否需要我查询一下该订单的详细信息？"
+  ],
+  "confirmation_reply": null,
+  "pending_action": null,
+  "remaining_pending_action": null,
+  "duration_ms": 5187.0
+}

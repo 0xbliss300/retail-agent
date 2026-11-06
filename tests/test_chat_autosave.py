@@ -248,8 +248,5 @@ def test_pending_resume_loads_existing_history_with_current_system_prompt(chat_d
     loaded = persistence.load_conversation(**context)
     assert loaded["version"] == 2
     assert loaded["messages"][1:3] == original[1:]
-    assert loaded["messages"][0]["content"] == demo_chat.build_system_prompt(
-        demo_chat.ORDER_PROMPT, demo_chat.POLICY_PROMPT, demo_chat.REFUND_PROMPT,
-        demo_chat.CANCELLATION_PROMPT,
-    )
+    assert loaded["messages"][0]["content"] == demo_chat.SYSTEM_PROMPT
     assert loaded["messages"][-2] == {"role": "user", "content": "先等等"}

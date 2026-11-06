@@ -1,0 +1,109 @@
+{
+  "case_id": "llm_refund_shipped_order",
+  "model": "glm-4.5-air",
+  "outcome": "refund_submitted",
+  "passed": true,
+  "checks": [
+    {
+      "name": "order.status",
+      "ok": true,
+      "actual": "shipped",
+      "expected": "shipped"
+    },
+    {
+      "name": "order.paid_amount_cents",
+      "ok": true,
+      "actual": 8900,
+      "expected": 8900
+    },
+    {
+      "name": "refund.cancellation_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "refund.after_sales_count",
+      "ok": true,
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "name": "refund.kind",
+      "ok": true,
+      "actual": "after_sales",
+      "expected": "after_sales"
+    },
+    {
+      "name": "refund.amount_cents",
+      "ok": true,
+      "actual": 8900,
+      "expected": 8900
+    },
+    {
+      "name": "refund.status",
+      "ok": true,
+      "actual": "pending",
+      "expected": "pending"
+    },
+    {
+      "name": "confirmation.count",
+      "ok": true,
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "name": "confirmation.status",
+      "ok": true,
+      "actual": "consumed",
+      "expected": "consumed"
+    },
+    {
+      "name": "confirmation.result_status",
+      "ok": true,
+      "actual": "submitted",
+      "expected": "submitted"
+    },
+    {
+      "name": "operation_logs.count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "other_orders.canceled",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "trace.tool_call.1.prepare_refund_confirmation",
+      "ok": true,
+      "actual": [
+        {
+          "tool": "prepare_refund_confirmation",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "expected": {
+        "tool": "prepare_refund_confirmation",
+        "ok": true
+      }
+    }
+  ],
+  "policy_violation": false,
+  "replies": [
+    "为订单 ORD-EVAL-14 提交全额退款申请，金额 89.00 元，原因：商品破损。提交申请不代表退款已到账。\n确认编号：cfm_7057e73f5ef44ee6be0b643ee9d002ad\n有效期至：2026-11-03T10:10:00+00:00\n当前尚未创建退款申请。你可以说“确认提交”，或“算了，不申请了”。"
+  ],
+  "confirmation_reply": "订单 ORD-EVAL-14 的退款申请已提交。\n申请编号：rf_ff2d9755b4144a02a8c4a7afcb77da98\n申请金额：89.00 元\n申请状态：待处理。提交申请不代表退款已到账。",
+  "pending_action": {
+    "tool": "create_refund",
+    "order_id": "ORD-EVAL-14",
+    "summary": "为订单 ORD-EVAL-14 提交全额退款申请，金额 89.00 元，原因：商品破损。提交申请不代表退款已到账。",
+    "status": "pending",
+    "expires_at": "2026-11-03T10:10:00+00:00"
+  },
+  "remaining_pending_action": null,
+  "duration_ms": 4906.0
+}

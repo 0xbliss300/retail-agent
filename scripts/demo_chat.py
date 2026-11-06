@@ -6,13 +6,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.agent.model_client import create_client
-from app.agent.prompts import (
-    CANCELLATION_PROMPT,
-    ORDER_PROMPT,
-    POLICY_PROMPT,
-    REFUND_PROMPT,
-    build_system_prompt,
-)
+from app.agent.prompts import SYSTEM_PROMPT
 from app.harness.confirmation import (
     list_resumable_confirmations,
     load_active_confirmation,
@@ -145,16 +139,10 @@ def main(argv: list[str] | None = None):
         if active is None and selected is not None and selected["pending"] is not None:
             print("待确认操作已结束或已过期；仅恢复聊天历史，本次不执行待确认操作。")
 
-    system_prompt = build_system_prompt(
-        ORDER_PROMPT,
-        POLICY_PROMPT,
-        REFUND_PROMPT,
-        CANCELLATION_PROMPT,
-    )
     version = snapshot["version"] if snapshot is not None else 0
 
     # 保留历史消息及工具调用关系，系统提示词使用当前程序版本。
-    messages = create_messages(system_prompt)
+    messages = create_messages(SYSTEM_PROMPT)
     if snapshot is not None:
         messages.extend(snapshot["messages"][1:])
         print("已加载之前保存的对话消息。")

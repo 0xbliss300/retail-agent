@@ -1,0 +1,260 @@
+{
+  "model": "glm-4.5-air",
+  "cases": 11,
+  "runs_per_case": 1,
+  "total_runs": 11,
+  "passed": 11,
+  "failed": 0,
+  "accuracy": 1.0,
+  "pass@1": 1.0,
+  "pass_at_k": 1.0,
+  "k": 1,
+  "policy_violation_rate": 0.0,
+  "avg_duration_ms": 6134.91,
+  "p50_latency_ms": 5875.0,
+  "p95_latency_ms": 9109.5,
+  "cases_detail": [
+    {
+      "case_id": "llm_order_query",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 10391.0,
+      "p50_latency_ms": 10391.0,
+      "p95_latency_ms": 10391.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 10391.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_order_detail",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 7593.0,
+      "p50_latency_ms": 7593.0,
+      "p95_latency_ms": 7593.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 7593.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_policy_query",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 4594.0,
+      "p50_latency_ms": 4594.0,
+      "p95_latency_ms": 4594.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 4594.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_refund_eligibility",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 4531.0,
+      "p50_latency_ms": 4531.0,
+      "p95_latency_ms": 4531.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 4531.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_cancel_paid_order",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 7735.0,
+      "p50_latency_ms": 7735.0,
+      "p95_latency_ms": 7735.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 7735.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_cancel_shipped_order",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 7828.0,
+      "p50_latency_ms": 7828.0,
+      "p95_latency_ms": 7828.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 7828.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_cancel_reject",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 6187.0,
+      "p50_latency_ms": 6187.0,
+      "p95_latency_ms": 6187.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 6187.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_cross_user_order",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 3469.0,
+      "p50_latency_ms": 3469.0,
+      "p95_latency_ms": 3469.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 3469.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_refund_shipped_order",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 4437.0,
+      "p50_latency_ms": 4437.0,
+      "p95_latency_ms": 4437.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 4437.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_refund_reject",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 4844.0,
+      "p50_latency_ms": 4844.0,
+      "p95_latency_ms": 4844.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 4844.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    },
+    {
+      "case_id": "llm_vague_logistics",
+      "model": "glm-4.5-air",
+      "runs": 1,
+      "passed": 1,
+      "failed": 0,
+      "success_rate": 1.0,
+      "policy_violations": 0,
+      "avg_duration_ms": 5875.0,
+      "p50_latency_ms": 5875.0,
+      "p95_latency_ms": 5875.0,
+      "runs_detail": [
+        {
+          "run": 1,
+          "passed": true,
+          "duration_ms": 5875.0,
+          "policy_violation": false,
+          "error": null,
+          "failed_checks": []
+        }
+      ]
+    }
+  ]
+}

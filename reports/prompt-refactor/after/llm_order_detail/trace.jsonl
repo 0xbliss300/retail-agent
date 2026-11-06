@@ -1,0 +1,7 @@
+{"ts":"2026-11-06T09:47:43.094540+00:00","event":"agent.start","run_id":"run_c5f98a07668840c4b0ae1e3bdd5679be","source":"chat","session_id":"sess_04ab2de61f464873a6255055bde2c3a9","thread_id":"thread_68dbb83af9b94b3fb432c37a95ded303","message_chars":21}
+{"ts":"2026-11-06T09:47:43.096545+00:00","event":"model.start","run_id":"run_c5f98a07668840c4b0ae1e3bdd5679be","step":0,"message_count":2}
+{"ts":"2026-11-06T09:47:44.527477+00:00","event":"model.end","run_id":"run_c5f98a07668840c4b0ae1e3bdd5679be","step":0,"status":"ok","duration_ms":1422.0,"tool_call_count":1,"token_chars":0}
+{"ts":"2026-11-06T09:47:44.534985+00:00","event":"tool.call","run_id":"run_c5f98a07668840c4b0ae1e3bdd5679be","tool":"get_order","ok":true,"status":"ok","error":null,"attempts":1,"duration_ms":0.0}
+{"ts":"2026-11-06T09:47:44.540073+00:00","event":"model.start","run_id":"run_c5f98a07668840c4b0ae1e3bdd5679be","step":1,"message_count":4}
+{"ts":"2026-11-06T09:47:46.694822+00:00","event":"model.end","run_id":"run_c5f98a07668840c4b0ae1e3bdd5679be","step":1,"status":"ok","duration_ms":2156.0,"tool_call_count":0,"token_chars":0}
+{"ts":"2026-11-06T09:47:46.705392+00:00","event":"agent.end","run_id":"run_c5f98a07668840c4b0ae1e3bdd5679be","source":"chat","status":"ok","duration_ms":3609.0,"reply_chars":141,"history_saved":true,"pending":false}

@@ -1,0 +1,10 @@
+{"ts":"2026-11-06T09:48:03.638050+00:00","event":"agent.start","run_id":"run_88dd5ceeeeeb43119cf9aadedf07d86c","source":"chat","session_id":"sess_646fef92cf6f4a72bd7b82ff9ea92164","thread_id":"thread_f19b16ee1c874d0bb8745256406dc906","message_chars":23}
+{"ts":"2026-11-06T09:48:03.640053+00:00","event":"model.start","run_id":"run_88dd5ceeeeeb43119cf9aadedf07d86c","step":0,"message_count":2}
+{"ts":"2026-11-06T09:48:10.286355+00:00","event":"model.end","run_id":"run_88dd5ceeeeeb43119cf9aadedf07d86c","step":0,"status":"ok","duration_ms":6640.0,"tool_call_count":1,"token_chars":0}
+{"ts":"2026-11-06T09:48:10.298867+00:00","event":"tool.call","run_id":"run_88dd5ceeeeeb43119cf9aadedf07d86c","tool":"cancel_order","ok":true,"status":"ok","error":null,"attempts":1,"duration_ms":16.0}
+{"ts":"2026-11-06T09:48:10.303369+00:00","event":"confirmation.prepared","run_id":"run_88dd5ceeeeeb43119cf9aadedf07d86c","tool":"cancel_order","order_id":"ORD-EVAL-7","expires_at":"2026-11-03T10:10:00+00:00"}
+{"ts":"2026-11-06T09:48:10.312902+00:00","event":"agent.end","run_id":"run_88dd5ceeeeeb43119cf9aadedf07d86c","source":"chat","status":"ok","duration_ms":6687.0,"reply_chars":172,"history_saved":true,"pending":true}
+{"ts":"2026-11-06T09:48:10.318419+00:00","event":"agent.start","run_id":"run_45ca67b2bba449d29833549d56b1640d","source":"chat","session_id":"sess_646fef92cf6f4a72bd7b82ff9ea92164","thread_id":"thread_f19b16ee1c874d0bb8745256406dc906","message_chars":7}
+{"ts":"2026-11-06T09:48:13.419898+00:00","event":"confirmation.intent","run_id":"run_45ca67b2bba449d29833549d56b1640d","tool":"cancel_order","intent":"reject"}
+{"ts":"2026-11-06T09:48:13.430403+00:00","event":"confirmation.decision","run_id":"run_45ca67b2bba449d29833549d56b1640d","source":"chat","tool":"cancel_order","decision":"reject","status":"rejected","error":null}
+{"ts":"2026-11-06T09:48:13.441912+00:00","event":"agent.end","run_id":"run_45ca67b2bba449d29833549d56b1640d","source":"chat","status":"ok","duration_ms":3125.0,"reply_chars":18,"history_saved":true,"pending":false}

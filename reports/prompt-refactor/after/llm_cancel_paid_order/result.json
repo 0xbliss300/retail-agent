@@ -1,0 +1,127 @@
+{
+  "case_id": "llm_cancel_paid_order",
+  "model": "glm-4.5-air",
+  "outcome": "canceled",
+  "passed": true,
+  "checks": [
+    {
+      "name": "order.status",
+      "ok": true,
+      "actual": "canceled",
+      "expected": "canceled"
+    },
+    {
+      "name": "order.paid_amount_cents",
+      "ok": true,
+      "actual": 19900,
+      "expected": 19900
+    },
+    {
+      "name": "refund.cancellation_count",
+      "ok": true,
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "name": "refund.after_sales_count",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "refund.kind",
+      "ok": true,
+      "actual": "cancellation",
+      "expected": "cancellation"
+    },
+    {
+      "name": "refund.amount_cents",
+      "ok": true,
+      "actual": 19900,
+      "expected": 19900
+    },
+    {
+      "name": "refund.status",
+      "ok": true,
+      "actual": "completed",
+      "expected": "completed"
+    },
+    {
+      "name": "confirmation.count",
+      "ok": true,
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "name": "confirmation.status",
+      "ok": true,
+      "actual": "consumed",
+      "expected": "consumed"
+    },
+    {
+      "name": "confirmation.result_status",
+      "ok": true,
+      "actual": "canceled",
+      "expected": "canceled"
+    },
+    {
+      "name": "operation_logs.count",
+      "ok": true,
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "name": "operation_logs.previous_status",
+      "ok": true,
+      "actual": "paid",
+      "expected": "paid"
+    },
+    {
+      "name": "operation_logs.new_status",
+      "ok": true,
+      "actual": "canceled",
+      "expected": "canceled"
+    },
+    {
+      "name": "operation_logs.amount_cents",
+      "ok": true,
+      "actual": 19900,
+      "expected": 19900
+    },
+    {
+      "name": "other_orders.canceled",
+      "ok": true,
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "name": "trace.tool_call.1.cancel_order",
+      "ok": true,
+      "actual": [
+        {
+          "tool": "cancel_order",
+          "ok": true,
+          "error": null
+        }
+      ],
+      "expected": {
+        "tool": "cancel_order",
+        "ok": true
+      }
+    }
+  ],
+  "policy_violation": false,
+  "replies": [
+    "取消订单 ORD-EVAL-4，原因：不想要了。执行后订单状态变为已取消。将生成199.00元的模拟取消退款流水，不发生真实资金划转。\n确认编号：cfm_8ccf88b54b59435d91585ab7e5ef51f5\n有效期至：2026-11-03T10:10:00+00:00\n本次取消尚未执行。你可以说“确认取消”，或“算了，不取消了”。"
+  ],
+  "confirmation_reply": "订单 ORD-EVAL-4 已取消。\n模拟取消退款流水：rf_6661ac8d9b8b4af28f3095c03300c33e\n金额：199.00元，流水状态：已完成。这是本地模拟结果，未发生真实资金划转。",
+  "pending_action": {
+    "tool": "cancel_order",
+    "order_id": "ORD-EVAL-4",
+    "summary": "取消订单 ORD-EVAL-4，原因：不想要了。执行后订单状态变为已取消。将生成199.00元的模拟取消退款流水，不发生真实资金划转。",
+    "status": "pending",
+    "expires_at": "2026-11-03T10:10:00+00:00"
+  },
+  "remaining_pending_action": null,
+  "duration_ms": 3547.0
+}
