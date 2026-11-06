@@ -11,7 +11,7 @@ from openai.types.chat import ChatCompletionMessage
 
 from app.agent.prompts import ORDER_PROMPT, POLICY_PROMPT, build_system_prompt
 from app.agent.scope import SCOPE_REFUSAL, off_topic_reason
-from app.harness.runtime import create_messages, run_agent
+from app.harness.runtime import create_messages, run_agent, stream_agent
 from app.harness.tool_executor import execute_tool
 
 
@@ -98,6 +98,43 @@ class RuntimeTests(unittest.TestCase):
         for text in ("帮我查订单", "ORD-1001 是什么", "继续", "你好", "能不能退款"):
             with self.subTest(text=text):
                 self.assertIsNone(off_topic_reason(text))
+
+    def test_sync_and_stream_share_one_execution_path(self):
+        """同一场景两条入口必须给出相同回复与消息历史，防止规则只加到一条路径。"""
+        system_prompt = build_system_prompt(ORDER_PROMPT, POLICY_PROMPT)
+        text_reply = reply("你好")
+        cases = [
+            (
+                "模型文本回复",
+                "你好",
+                [text_reply],
+                [("token", "你"), ("token", "好"), ("message", text_reply)],
+            ),
+            ("域外闸门", "用 Python 写一个冒泡排序", [], []),
+        ]
+
+        for label, message, responses, chunks in cases:
+            with self.subTest(label=label):
+                sync_messages = create_messages(system_prompt)
+                stream_messages = create_messages(system_prompt)
+
+                with patch("app.harness.runtime.request_model", side_effect=list(responses)):
+                    sync_answer = run_agent(message, "USER-001", sync_messages, None)
+                with patch(
+                    "app.harness.runtime.stream_model",
+                    side_effect=lambda *args, _chunks=chunks, **kwargs: iter(_chunks),
+                ):
+                    events = list(
+                        stream_agent(message, "USER-001", stream_messages, None)
+                    )
+                stream_answer = "".join(
+                    event["data"]["text"]
+                    for event in events
+                    if event["event"] == "token"
+                )
+
+                self.assertEqual(stream_answer, sync_answer)
+                self.assertEqual(stream_messages, sync_messages)
 
 
 if __name__ == "__main__":
