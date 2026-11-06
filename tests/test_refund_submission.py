@@ -347,5 +347,7 @@ def test_chat_approval_reports_policy_denial_without_writing(pending_refund, mon
         session_id=context["session_id"], thread_id=context["thread_id"], now=now,
     )
 
-    assert "POLICY_DENIED" in answer
+    # 拒绝原因要用中文说明给用户，不暴露内部错误码。
+    assert "未创建新的退款申请" in answer
+    assert "当前订单状态不支持售后退款申请" in answer
     assert read_state(context) == before

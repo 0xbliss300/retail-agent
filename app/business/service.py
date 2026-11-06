@@ -6,6 +6,11 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.business import cancellation
+from app.business.labels import (
+    order_status_text,
+    with_order_status_text,
+    with_refund_status_text,
+)
 from app.business.policies import POLICIES, check_refund_window
 from app.business.repository import (
     close_pending_confirmation,
@@ -52,7 +57,7 @@ def get_order(*, user_id: str, order_id: str) -> dict:
     if order is None:
         return {"ok": False, "error": "ORDER_NOT_FOUND"}
 
-    return {"ok": True, "order": order}
+    return {"ok": True, "order": with_order_status_text(order)}
 
 
 def list_orders(*, user_id: str, limit: int = 10, offset: int = 0) -> dict:
@@ -68,7 +73,7 @@ def list_orders(*, user_id: str, limit: int = 10, offset: int = 0) -> dict:
     has_more = len(rows) > limit
     return {
         "ok": True,
-        "orders": rows[:limit],
+        "orders": [with_order_status_text(row) for row in rows[:limit]],
         "limit": limit,
         "offset": offset,
         "has_more": has_more,
@@ -110,7 +115,7 @@ def list_refunds(
     has_more = len(rows) > limit
     return {
         "ok": True,
-        "refunds": rows[:limit],
+        "refunds": [with_refund_status_text(row) for row in rows[:limit]],
         "status": status,
         "limit": limit,
         "offset": offset,
@@ -251,6 +256,7 @@ def list_refund_eligibility(
         orders.append({
             "order_id": order["order_id"],
             "status": order["status"],
+            "status_text": order_status_text(order["status"]),
             **_refund_judgement(
                 order,
                 has_active_refund=order["order_id"] in active_order_ids,
@@ -683,5 +689,5 @@ def get_refund_status(*, user_id: str, order_id: str) -> dict:
     return {
         "ok": True,
         "order_id": order_id,
-        "refund": refund,
+        "refund": with_refund_status_text(refund) if refund is not None else None,
     }

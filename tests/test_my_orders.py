@@ -68,7 +68,8 @@ def test_list_returns_only_owned_order_summaries(query_orders):
     assert result["ok"] is True
     assert [row["order_id"] for row in result["orders"]] == ["ORD-1001", "ORD-A", "ORD-B", "ORD-C"]
     assert result["orders"][1] == {
-        "order_id": "ORD-A", "status": "shipped", "paid_amount_cents": 12900,
+        "order_id": "ORD-A", "status": "shipped", "status_text": "已发货",
+        "paid_amount_cents": 12900,
         "paid_at": "2026-10-25T02:00:00+00:00", "shipped_at": "2026-10-26T02:00:00+00:00",
         "delivered_at": None,
     }

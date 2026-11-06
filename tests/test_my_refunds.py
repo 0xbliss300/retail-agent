@@ -89,10 +89,10 @@ def test_lists_own_after_sales_refunds_newest_first(refunds):
     assert [row["refund_id"] for row in result["refunds"]] == ["rf-3", "rf-2", "rf-1"]
     assert result["refunds"][0] == {
         "refund_id": "rf-3", "order_id": "ORD-C", "amount_cents": 6900,
-        "status": "completed", "reason": "质量问题",
+        "status": "completed", "status_text": "已完成", "reason": "质量问题",
         "created_at": "2026-10-29T02:00:00+00:00",
         "updated_at": "2026-10-29T05:00:00+00:00",
-        "order_status": "refunded",
+        "order_status": "refunded", "order_status_text": "已退款",
     }
     assert all("user_id" not in row for row in result["refunds"])
     assert result["status"] is None

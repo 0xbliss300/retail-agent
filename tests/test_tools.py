@@ -38,6 +38,7 @@ def test_get_order_returns_owned_order(readonly_database):
             "order_id": "ORD-TEST",
             "user_id": "USER-TEST",
             "status": "paid",
+            "status_text": "已付款",
             "paid_amount_cents": 9900,
             "paid_at": None,
             "shipped_at": None,

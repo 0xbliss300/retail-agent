@@ -33,6 +33,7 @@ TOOLS = [
             "description": (
                 "分页查询当前用户本人的订单列表，不需要用户提供订单号。"
                 "返回订单号、状态、实付金额及时间；has_more和next_offset指示下一页。"
+                "向用户说明状态时使用中文status_text，不输出status的英文值。"
                 "按订单号排序，仅查询，不修改订单。"
             ),
             "parameters": {
@@ -59,6 +60,7 @@ TOOLS = [
                 "分页查询当前用户本人的售后退款申请，不需要订单号。"
                 "返回申请编号、订单号、金额、状态、原因和申请时间；"
                 "has_more和next_offset指示下一页。"
+                "向用户说明状态时使用中文status_text和order_status_text。"
                 "不包含取消订单产生的退款流水，仅查询，不修改任何状态。"
             ),
             "parameters": {
@@ -110,7 +112,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_order",
-            "description": "查询当前用户的订单信息。",
+            "description": (
+                "查询当前用户的订单信息，返回订单号、金额、时间和状态。"
+                "向用户说明状态时使用中文status_text，不输出英文状态值。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -177,6 +182,7 @@ TOOLS = [
             "description": (
                 "一次返回当前用户本人订单的退款资格，用于回答“我有哪些订单可以退款”。"
                 "返回每笔订单的状态、eligible、policy_code 和 reason；"
+                "向用户说明订单状态时使用中文status_text。"
                 "eligible_count 只统计本次返回的订单，has_more 为 true 时还有订单未覆盖。"
                 "仅查询资格，不提交申请、不执行退款。"
             ),
@@ -221,6 +227,7 @@ TOOLS = [
             "name": "get_refund_status",
             "description": (
                 "查询当前用户指定订单的最新售后退款申请及状态。"
+                "向用户说明状态时使用中文status_text。"
                 "仅查询，不创建申请、不执行退款。"
             ),
             "parameters": {

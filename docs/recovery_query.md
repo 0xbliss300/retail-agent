@@ -49,7 +49,7 @@ curl -s http://localhost:8000/recover \
   "last_state": "consumed",
   "tool": "cancel_order",
   "order_id": "ORD-2002",
-  "summary": "取消订单 ORD-2002，原因：不想要了。执行后订单变为canceled。",
+  "summary": "取消订单 ORD-2002，原因：不想要了。执行后订单状态变为已取消。",
   "expires_at": "2026-11-04T12:55:00+00:00",
   "result": {
     "ok": true,

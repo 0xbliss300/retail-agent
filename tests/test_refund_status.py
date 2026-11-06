@@ -5,6 +5,7 @@ import json
 import pytest
 from openai.types.chat import ChatCompletionMessage
 
+from app.business.labels import refund_status_text
 from app.harness.runtime import create_messages, run_agent
 from app.harness.tool_executor import execute_tool
 from app.storage import database
@@ -96,6 +97,7 @@ def test_query_reports_saved_application_status(query_refund, status):
             "amount_cents": 8900,
             "reason": "商品破损",
             "status": status,
+            "status_text": refund_status_text(status),
             "created_at": "2026-10-30T02:00:00+00:00",
             "updated_at": "2026-10-30T02:00:00+00:00",
         },

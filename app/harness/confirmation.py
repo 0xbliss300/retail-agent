@@ -220,7 +220,7 @@ def prepare_cancel_confirmation(
         "未付款订单无需退款，不生成退款流水。" if params["order_status"] == "unpaid" else
         f"将生成{amount // 100}.{amount % 100:02d}元的模拟取消退款流水，不发生真实资金划转。"
     )
-    summary = f"取消订单 {order_id}，原因：{reason}。执行后订单变为canceled。{consequence}"
+    summary = f"取消订单 {order_id}，原因：{reason}。执行后订单状态变为已取消。{consequence}"
     confirmation_id = f"cfm_{uuid4().hex}"
     expires_at = (now + CONFIRMATION_TTL).isoformat()
     record = {

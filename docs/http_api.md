@@ -194,7 +194,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/confirm" -Method Post -ContentType
 
 ```json
 {
-  "reply": "订单 ORD-4001 已取消（canceled）。……",
+  "reply": "订单 ORD-4001 已取消。……",
   "session_id": "sess_...",
   "thread_id": "thread_...",
   "pending_action": null,

@@ -93,21 +93,21 @@ def format_confirmation_result(*, tool: str, result: dict) -> str:
         return "已拒绝当前操作，未创建退款申请。"
 
     if is_cancel and result.get("ok") and result.get("status") == "canceled":
-        answer = f"订单 {result['order_id']} 已取消（canceled）。"
+        answer = f"订单 {result['order_id']} 已取消。"
         refund = result["refund"]
         if refund is None:
             return answer + "未付款订单无需退款，未生成退款流水。"
         amount = refund["amount_cents"]
         return (
             answer + f"\n模拟取消退款流水：{refund['refund_id']}\n"
-            f"金额：{amount // 100}.{amount % 100:02d}元，流水状态：completed。"
+            f"金额：{amount // 100}.{amount % 100:02d}元，流水状态：已完成。"
             "这是本地模拟结果，未发生真实资金划转。"
         )
 
     if is_withdraw and result.get("ok") and result.get("status") == "withdrawn":
         amount = result["amount_cents"]
         return (
-            f"订单 {result['order_id']} 的退款申请 {result['refund_id']} 已撤回（withdrawn）。\n"
+            f"订单 {result['order_id']} 的退款申请 {result['refund_id']} 已撤回。\n"
             f"申请金额：{amount // 100}.{amount % 100:02d} 元\n"
             "订单状态未改变；如需退款，可以重新提交申请。"
         )
@@ -118,7 +118,7 @@ def format_confirmation_result(*, tool: str, result: dict) -> str:
             f"订单 {result['order_id']} 的退款申请已提交。\n"
             f"申请编号：{result['refund_id']}\n"
             f"申请金额：{amount // 100}.{amount % 100:02d} 元\n"
-            "申请状态：pending（待处理）。提交申请不代表退款已到账。"
+            "申请状态：待处理。提交申请不代表退款已到账。"
         )
 
     error = result.get("error", "INTERNAL_ERROR")
@@ -131,16 +131,16 @@ def format_confirmation_result(*, tool: str, result: dict) -> str:
     if error == "CONFIRMATION_STALE":
         if is_cancel:
             return (
-                "订单状态或付款信息已变化，本次未执行取消（CONFIRMATION_STALE）。"
+                "订单状态或付款信息已变化，本次未执行取消。"
                 "请先拒绝当前操作，再重新发起取消以核对新摘要。"
             )
         if is_withdraw:
             return (
-                "退款申请金额已变化，本次未执行撤回（CONFIRMATION_STALE）。"
+                "退款申请金额已变化，本次未执行撤回。"
                 "请先拒绝当前操作，再重新发起撤回以核对新金额。"
             )
         return (
-            "订单金额已变化，未提交退款申请（CONFIRMATION_STALE）。"
+            "订单金额已变化，未提交退款申请。"
             "请先拒绝当前操作，再重新发起申请以核对新金额。"
         )
     if is_withdraw:
@@ -153,10 +153,10 @@ def format_confirmation_result(*, tool: str, result: dict) -> str:
 
     reason = result.get("reason", "当前操作无法执行。")
     if is_cancel:
-        return f"本次未执行取消（{error}）：{reason}"
+        return f"本次未执行取消：{reason}"
     if is_withdraw:
-        return f"本次未撤回退款申请（{error}）：{reason}"
-    return f"未创建新的退款申请（{error}）：{reason}"
+        return f"本次未撤回退款申请：{reason}"
+    return f"未创建新的退款申请：{reason}"
 
 
 def _handle_pending_confirmation(
