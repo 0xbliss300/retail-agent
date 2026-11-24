@@ -18,6 +18,26 @@ def get_connection():
 
     return conn
 
+
+def migrate_accounts(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            user_id TEXT PRIMARY KEY NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            password_salt BLOB NOT NULL,
+            password_hash BLOB NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS login_sessions (
+            token_hash BLOB PRIMARY KEY NOT NULL,
+            user_id TEXT NOT NULL REFERENCES accounts(user_id),
+            expires_at INTEGER NOT NULL
+        )
+    """)
+
+
 # 创建退款申请表
 def migrate_refund_requests(conn: sqlite3.Connection) -> None:
     # 为下面的组合外键提供唯一的引用目标。
@@ -213,6 +233,21 @@ def migrate_refund_settlements(conn: sqlite3.Connection) -> None:
         """)
 
 
+def migrate_return_requests(conn: sqlite3.Connection) -> None:
+    """每笔退货关联一笔现有售后申请，保留已存在的历史记录。"""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS return_requests (
+            return_id TEXT PRIMARY KEY NOT NULL,
+            refund_id TEXT NOT NULL UNIQUE REFERENCES refund_requests(refund_id),
+            tracking_number TEXT,
+            accepted_at TEXT,
+            CHECK (accepted_at IS NULL OR tracking_number IS NOT NULL)
+        )
+        """
+    )
+
+
 def _table_sql(conn: sqlite3.Connection, name: str) -> str | None:
     """读取建表语句，用于判断旧库的 CHECK 约束是否已包含新取值。"""
     row = conn.execute(
@@ -382,6 +417,7 @@ def init_db():
                     f"ALTER TABLE orders ADD COLUMN {column} TEXT"
                 )
 
+        migrate_accounts(conn)
         migrate_refund_requests(conn)
         migrate_confirmations(conn)
         migrate_chat_threads(conn)
@@ -389,6 +425,7 @@ def init_db():
         migrate_cancellation(conn)
         migrate_refund_settlements(conn)
         migrate_withdraw_refund(conn)
+        migrate_return_requests(conn)
 
         conn.executemany(
             """
@@ -427,11 +464,23 @@ def migrate_chat_threads(conn: sqlite3.Connection) -> None:
             thread_id TEXT NOT NULL,
             title TEXT NOT NULL,
             messages_json TEXT NOT NULL,
+            cancel_selection_json TEXT,
+            last_queried_order_id TEXT,
+            pending_clarification_json TEXT,
             version INTEGER NOT NULL CHECK (version >= 1),
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (user_id, session_id, thread_id)
         )
     """)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_threads)")}
+    if "cancel_selection_json" not in columns:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN cancel_selection_json TEXT")
+    if "last_queried_order_id" not in columns:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN last_queried_order_id TEXT")
+    if "pending_clarification_json" not in columns:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN pending_clarification_json TEXT")
+
+
 if __name__ == "__main__":
     init_db()

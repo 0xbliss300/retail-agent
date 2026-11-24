@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate, useOutletContext } from "react-router-dom";
+import { post, setWorkspaceAccount } from "../api.js";
 import Icon, { BrandMark } from "./Icons.jsx";
 import {
   loadConversations,
-  loadProfile,
   subscribeConversations,
 } from "../storage.js";
 
@@ -16,16 +16,26 @@ const NAV = [
 
 export default function Sidebar() {
   const navigate = useNavigate();
-  const [profile, setProfile] = useState(loadProfile);
+  const profile = useOutletContext();
   const [conversations, setConversations] = useState(loadConversations);
   const [activeId, setActiveId] = useState(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
 
   useEffect(() => subscribeConversations(() => setConversations(loadConversations())), []);
-  useEffect(() => {
-    const refresh = () => setProfile(loadProfile());
-    window.addEventListener("storage", refresh);
-    return () => window.removeEventListener("storage", refresh);
-  }, []);
+
+  const signOut = async () => {
+    setSigningOut(true);
+    setLogoutError("");
+    try {
+      await post("/auth/logout");
+      setWorkspaceAccount(null);
+      navigate("/login", { replace: true });
+    } catch (failure) {
+      setLogoutError(failure.message);
+      setSigningOut(false);
+    }
+  };
 
   const openConversation = (conversation) => {
     setActiveId(conversation.id);
@@ -78,16 +88,17 @@ export default function Sidebar() {
         )}
       </div>
 
-      <div className="sidebar__footer" onClick={() => navigate("/login")} role="button" tabIndex={0}>
+      {logoutError ? <p role="alert" className="form-error">{logoutError}</p> : null}
+      <button className="sidebar__footer" type="button" onClick={signOut} disabled={signingOut}>
         <span className="avatar-circle">
           <Icon name="user" size={18} />
         </span>
         <span className="sidebar__user">
-          <strong>{profile.name || "小林"}</strong>
-          <small>个人账号</small>
+          <strong>{profile.name}</strong>
+          <small>{signingOut ? "正在退出…" : "退出登录"}</small>
         </span>
         <Icon name="chevron-right" size={16} />
-      </div>
+      </button>
     </aside>
   );
 }

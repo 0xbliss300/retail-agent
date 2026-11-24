@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from getpass import getpass
 
 import httpx
 
@@ -10,6 +11,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="本地流式聊天演示")
     parser.add_argument("--message", default="查询我的订单", help="本轮用户消息")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--email", default="demo@retailops.local", help="登录账号邮箱")
     parser.add_argument("--session-id", help="继续已有对话时提供")
     parser.add_argument("--thread-id", help="继续已有对话时提供")
     args = parser.parse_args(argv)
@@ -23,22 +25,24 @@ def main(argv: list[str] | None = None) -> None:
         payload["thread_id"] = args.thread_id
 
     try:
-        with httpx.stream(
-            "POST",
-            f"{args.base_url}/chat/stream",
-            json=payload,
-            timeout=120.0,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = json.loads(line[6:])
-                if "text" in data:
-                    print(data["text"], end="", flush=True)
-                elif "reply" in data or "error" in data:
-                    print("\n")
-                    print(json.dumps(data, ensure_ascii=False, indent=2))
+        with httpx.Client(base_url=args.base_url, timeout=120.0) as client:
+            login = client.post(
+                "/auth/login", json={"email": args.email, "password": getpass("账号密码：")},
+            )
+            login.raise_for_status()
+            with client.stream("POST", "/chat/stream", json=payload) as response:
+                if not response.is_success:
+                    response.read()
+                    response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = json.loads(line[6:])
+                    if "text" in data:
+                        print(data["text"], end="", flush=True)
+                    elif "reply" in data or "error" in data:
+                        print("\n")
+                        print(json.dumps(data, ensure_ascii=False, indent=2))
     except httpx.HTTPStatusError as exc:
         print(exc.response.text)
     except httpx.HTTPError as exc:

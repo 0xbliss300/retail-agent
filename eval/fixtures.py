@@ -52,6 +52,19 @@ def seed_order(*, user_id: str, order: dict) -> None:
                     shipped_at,
                 ),
             )
+            if shipment := order.get("shipment"):
+                conn.execute(
+                    "INSERT INTO shipments (order_id, user_id, carrier, tracking_number) VALUES (?, ?, ?, ?)",
+                    (order["order_id"], user_id, shipment["carrier"], shipment["tracking_number"]),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO logistics_events (event_id, order_id, user_id, occurred_at, description)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (f"eval_{order['order_id']}", order["order_id"], user_id,
+                     shipped_at, shipment["description"]),
+                )
     finally:
         conn.close()
 

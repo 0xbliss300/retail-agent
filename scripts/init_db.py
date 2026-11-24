@@ -3,6 +3,7 @@
 from app.storage.database import init_db
 from app.storage.seed import (
     seed_cancellation_orders,
+    seed_demo_accounts,
     seed_extra_orders,
     seed_logistics,
     seed_orders,
@@ -11,9 +12,10 @@ from app.storage.seed import (
 
 if __name__ == "__main__":
     init_db()
+    seed_demo_accounts()
     seed_orders()
     seed_refunds()
     seed_logistics()
     seed_cancellation_orders()
     seed_extra_orders()
-    print("模拟订单、退款、物流、取消和新增演示订单加载完成。")
+    print("演示账号、模拟订单、退款、物流和取消数据准备完成。")

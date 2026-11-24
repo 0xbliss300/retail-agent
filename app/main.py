@@ -1,15 +1,19 @@
-"""FastAPI 入口：HTTP 演示使用服务端固定模拟身份。"""
+"""FastAPI 入口。"""
 
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import APIError
 
 from app.agent.model_client import create_client
+from app.auth import AuthenticatedUser
+from app.auth import router as auth_router
 from app.business import service as business
 from app.business.policies import POLICIES
 from app.business.service import approve_withdraw_confirmation
@@ -25,18 +29,29 @@ from app.schemas import (
     ChatRequest,
     ChatResponse,
     ConfirmRequest,
+    ConfirmResponse,
     HealthResponse,
     RecoverRequest,
     RecoverResponse,
 )
 
 APP_VERSION = "0.1.0"
-DEMO_USER_ID = "USER-001"
 
 app = FastAPI(title="RetailOps Agent", version=APP_VERSION)
+app.include_router(auth_router)
 
 
-def _prepare_chat(request: ChatRequest, now: datetime) -> tuple[str, dict]:
+@app.exception_handler(RequestValidationError)
+async def handle_validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path == "/auth/login":
+        return JSONResponse(
+            status_code=422,
+            content={"detail": {"error": "INVALID_CREDENTIALS", "message": "请输入有效的邮箱和密码。"}},
+        )
+    return await request_validation_exception_handler(request, exc)
+
+
+def _prepare_chat(request: ChatRequest, user_id: str, now: datetime) -> tuple[str, dict]:
     message = request.message.strip()
     if not message:
         raise HTTPException(
@@ -55,7 +70,7 @@ def _prepare_chat(request: ChatRequest, now: datetime) -> tuple[str, dict]:
 
     try:
         context = open_conversation(
-            user_id=DEMO_USER_ID,
+            user_id=user_id,
             session_id=request.session_id,
             thread_id=request.thread_id,
             now=now,
@@ -87,22 +102,20 @@ def _sse(event: dict) -> str:
 def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
-        demo_user_id=DEMO_USER_ID,
         version=APP_VERSION,
     )
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, user_id: AuthenticatedUser) -> ChatResponse:
     now = datetime.now(UTC)
-    message, context = _prepare_chat(request, now)
+    message, context = _prepare_chat(request, user_id, now)
 
     try:
         result = send_message(
             context=context,
             message=message,
             client=create_client(),
-            now=now,
         )
     except APIError as exc:
         raise HTTPException(
@@ -116,8 +129,8 @@ def chat(request: ChatRequest) -> ChatResponse:
     return ChatResponse(**result)
 
 
-@app.post("/confirm", response_model=ChatResponse)
-def confirm(request: ConfirmRequest) -> ChatResponse:
+@app.post("/confirm", response_model=ConfirmResponse)
+def confirm(request: ConfirmRequest, user_id: AuthenticatedUser) -> ConfirmResponse:
     session_id = request.session_id.strip()
     thread_id = request.thread_id.strip()
     confirmation_id = request.confirmation_id.strip()
@@ -131,18 +144,20 @@ def confirm(request: ConfirmRequest) -> ChatResponse:
         )
 
     now = datetime.now(UTC)
+    scope = {"user_id": user_id, "session_id": session_id, "thread_id": thread_id}
     try:
-        context = open_conversation(
-            user_id=DEMO_USER_ID,
-            session_id=session_id,
-            thread_id=thread_id,
-            now=now,
-        )
+        context = open_conversation(**scope, now=now)
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
             detail={"error": "INVALID_SESSION_CONTEXT", "message": str(exc)},
         ) from exc
+
+    if context is None and request.decision == "approve":
+        record = business.get_confirmation(**scope, confirmation_id=confirmation_id)
+        if record and record["tool"] == "cancel_order" and record["status"] == "consumed":
+            # 已执行的取消结果独立于聊天历史的有效期。
+            context = scope
 
     if context is None:
         raise HTTPException(
@@ -176,16 +191,17 @@ def confirm(request: ConfirmRequest) -> ChatResponse:
             detail={"error": error, "message": "确认参数无效。"},
         )
 
-    return ChatResponse(**result)
+    return ConfirmResponse(**result)
 
 
 @app.post("/recover", response_model=RecoverResponse)
-def recover(request: RecoverRequest) -> RecoverResponse:
-    """断线后查询上一次高风险操作的真实结果；不调用模型、不写数据库。"""
+def recover(request: RecoverRequest, user_id: AuthenticatedUser) -> RecoverResponse:
+    """断线后查询操作的真实结果；不调用模型、不写数据库。"""
     result = describe_recovery(
-        user_id=DEMO_USER_ID,
+        user_id=user_id,
         session_id=request.session_id.strip(),
         thread_id=request.thread_id.strip(),
+        confirmation_id=request.confirmation_id.strip() if request.confirmation_id is not None else None,
         now=datetime.now(UTC),
     )
     if not result.get("ok"):
@@ -201,9 +217,9 @@ def recover(request: RecoverRequest) -> RecoverResponse:
 
 
 @app.post("/chat/stream")
-def chat_stream(request: ChatRequest) -> StreamingResponse:
+def chat_stream(request: ChatRequest, user_id: AuthenticatedUser) -> StreamingResponse:
     now = datetime.now(UTC)
-    message, context = _prepare_chat(request, now)
+    message, context = _prepare_chat(request, user_id, now)
     client = create_client()
 
     def events():
@@ -211,7 +227,6 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
             context=context,
             message=message,
             client=client,
-            now=now,
         ):
             yield _sse(event)
 
@@ -219,7 +234,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         events(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "X-Accel-Buffering": "no",
         },
     )
@@ -227,7 +242,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 # ---------------------------------------------------------------------------
 # 前端只读接口：订单、售后申请与政策。
-# 全部使用服务端固定模拟身份，和 /chat 共享同一份 SQLite 数据。
+# 订单和售后接口与 /chat 共享同一个登录身份。
 # ---------------------------------------------------------------------------
 
 # 页面上的撤回操作使用独立的会话上下文：用户在对话框中的点击就是确认动作，
@@ -250,30 +265,31 @@ def _require_ok(result: dict, status_code: int, message: str) -> dict:
 
 @app.get("/orders")
 def list_orders(
+    user_id: AuthenticatedUser,
     limit: int = Query(10, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    result = business.list_orders(user_id=DEMO_USER_ID, limit=limit, offset=offset)
+    result = business.list_orders(user_id=user_id, limit=limit, offset=offset)
     return _require_ok(result, 422, "分页参数无效。")
 
 
 @app.get("/orders/{order_id}")
-def order_detail(order_id: str) -> dict:
-    order_result = business.get_order(user_id=DEMO_USER_ID, order_id=order_id.strip())
+def order_detail(order_id: str, user_id: AuthenticatedUser) -> dict:
+    order_result = business.get_order(user_id=user_id, order_id=order_id.strip())
     if not order_result.get("ok"):
         raise HTTPException(
             status_code=404,
             detail={"error": "ORDER_NOT_FOUND", "message": "未找到该订单。"},
         )
     order = {key: value for key, value in order_result["order"].items() if key != "user_id"}
-    logistics = business.get_logistics(user_id=DEMO_USER_ID, order_id=order["order_id"])
+    logistics = business.get_logistics(user_id=user_id, order_id=order["order_id"])
     eligibility = business.check_refund_eligibility(
-        user_id=DEMO_USER_ID,
+        user_id=user_id,
         order_id=order["order_id"],
         now=datetime.now(UTC),
     )
     latest_refund = business.get_refund_status(
-        user_id=DEMO_USER_ID,
+        user_id=user_id,
         order_id=order["order_id"],
     )
     return {
@@ -286,12 +302,13 @@ def order_detail(order_id: str) -> dict:
 
 @app.get("/refunds")
 def list_refunds(
+    user_id: AuthenticatedUser,
     status: str | None = None,
     limit: int = Query(10, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ) -> dict:
     result = business.list_refunds(
-        user_id=DEMO_USER_ID,
+        user_id=user_id,
         status=status,
         limit=limit,
         offset=offset,
@@ -300,8 +317,8 @@ def list_refunds(
 
 
 @app.get("/refunds/{refund_id}")
-def refund_detail(refund_id: str) -> dict:
-    result = business.get_refund(user_id=DEMO_USER_ID, refund_id=refund_id.strip())
+def refund_detail(refund_id: str, user_id: AuthenticatedUser) -> dict:
+    result = business.get_refund(user_id=user_id, refund_id=refund_id.strip())
     if not result.get("ok"):
         raise HTTPException(
             status_code=404,
@@ -311,10 +328,10 @@ def refund_detail(refund_id: str) -> dict:
 
 
 @app.post("/refunds/{refund_id}/withdraw")
-def withdraw_refund(refund_id: str) -> dict:
+def withdraw_refund(refund_id: str, user_id: AuthenticatedUser) -> dict:
     """撤回待处理申请；页面确认后调用，服务端重新校验状态与金额。"""
     now = datetime.now(UTC)
-    result = business.get_refund(user_id=DEMO_USER_ID, refund_id=refund_id.strip())
+    result = business.get_refund(user_id=user_id, refund_id=refund_id.strip())
     if not result.get("ok"):
         raise HTTPException(
             status_code=404,
@@ -326,7 +343,7 @@ def withdraw_refund(refund_id: str) -> dict:
     thread_id = f"{UI_WITHDRAW_SESSION}:{refund['refund_id']}"
 
     prepared = prepare_withdraw_confirmation(
-        user_id=DEMO_USER_ID,
+        user_id=user_id,
         session_id=session_id,
         thread_id=thread_id,
         order_id=refund["order_id"],
@@ -342,7 +359,7 @@ def withdraw_refund(refund_id: str) -> dict:
         )
 
     executed = approve_withdraw_confirmation(
-        user_id=DEMO_USER_ID,
+        user_id=user_id,
         session_id=session_id,
         thread_id=thread_id,
         confirmation_id=prepared["confirmation_id"],

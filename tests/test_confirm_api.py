@@ -18,10 +18,9 @@ THREAD_ID = "thread_confirm"
 
 
 @pytest.fixture
-def api_client(tmp_path, monkeypatch):
+def api_client(tmp_path, monkeypatch, login_demo):
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "retail.db")
     database.init_db()
-    monkeypatch.setattr(main, "DEMO_USER_ID", USER_ID)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("/confirm 不应调用模型")
@@ -32,21 +31,22 @@ def api_client(tmp_path, monkeypatch):
     monkeypatch.setattr("app.agent.confirmation_intent.request_model", forbidden)
 
     with TestClient(main.app) as client:
+        login_demo(client)
         yield client
 
 
-def insert_order(order_id, status, *, paid_amount=0, shipped_at=None):
+def insert_order(order_id, status, *, paid_amount=0, paid_at=None, shipped_at=None):
     conn = database.get_connection()
     try:
         with conn:
             conn.execute(
                 """
                 INSERT INTO orders (
-                    order_id, user_id, status, paid_amount_cents, shipped_at
+                    order_id, user_id, status, paid_amount_cents, paid_at, shipped_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (order_id, USER_ID, status, paid_amount, shipped_at),
+                (order_id, USER_ID, status, paid_amount, paid_at, shipped_at),
             )
     finally:
         conn.close()
@@ -155,6 +155,32 @@ def test_reject_cancel_does_not_modify_business_data(api_client):
     )[0]["status"] == "rejected"
     assert read_database("SELECT * FROM operation_logs") == []
     assert read_database("SELECT * FROM refund_requests") == []
+
+
+def test_paid_cancel_replays_same_refund_after_chat_expiry(api_client):
+    order_id = "ORD-CONFIRM-PAID"
+    paid_at = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    insert_order(order_id, "paid", paid_amount=25900, paid_at=paid_at)
+    confirmation_id = prepare_cancel(order_id)
+    first = confirm(api_client, confirmation_id, "approve")
+    assert first.status_code == 200
+    result = first.json()["cancellation_result"]
+    assert result["status"] == "canceled"
+    refunds = read_database("SELECT refund_id FROM refund_requests")
+    assert refunds == [{"refund_id": result["refund"]["refund_id"]}]
+
+    conn = database.get_connection()
+    try:
+        with conn:
+            conn.execute("UPDATE chat_threads SET updated_at = '2000-01-01T00:00:00+00:00'")
+    finally:
+        conn.close()
+    before = dump_database()
+    replay = confirm(api_client, confirmation_id, "approve")
+    assert replay.status_code == 200
+    assert replay.json()["cancellation_result"] == result
+    assert len(read_database("SELECT * FROM refund_requests")) == 1
+    assert dump_database() == before
 
 
 def test_approve_refund_creates_pending_request(api_client):

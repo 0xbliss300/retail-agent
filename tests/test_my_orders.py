@@ -47,7 +47,7 @@ def query_orders(tmp_path, monkeypatch):
                     ("ORD-A", "USER-001", "shipped", 12900,
                      "2026-10-25T02:00:00+00:00", "2026-10-26T02:00:00+00:00"),
                     ("ORD-B", "USER-001", "canceled", 8900, "2026-10-25T02:00:00+00:00", None),
-                    ("ORD-PRIVATE", "USER-002", "paid", 99900, None, None),
+                    ("ORD-PRIVATE", "USER-002", "paid", 12900, None, None),
                 ],
             )
     finally:
@@ -112,6 +112,31 @@ def test_identity_is_taken_from_executor_context(query_orders):
 def test_repository_filters_orders_before_applying_page(query_orders):
     result = repository.get_orders_for_user(user_id="USER-002", limit=1, offset=1)
     assert [row["order_id"] for row in result] == ["ORD-PRIVATE"]
+
+
+def test_amount_lookup_only_returns_owned_matches_and_preserves_pagination(query_orders):
+    first = query_orders('{"paid_amount_cents":12900}', name="find_orders_by_amount")
+    assert first["orders"] == [{"order_id": "ORD-A", "paid_at": "2026-10-25T02:00:00+00:00"}]
+    assert first["has_more"] is False
+
+    conn = database.get_connection()
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT INTO orders (order_id,user_id,status,paid_amount_cents) "
+                "VALUES (?,'USER-001','paid',12900)",
+                [(f"PAGE-{i}",) for i in range(5)],
+            )
+    finally:
+        conn.close()
+
+    first = query_orders('{"paid_amount_cents":12900}', name="find_orders_by_amount")
+    assert [row["order_id"] for row in first["orders"]] == ["ORD-A", "PAGE-0", "PAGE-1", "PAGE-2", "PAGE-3"]
+    assert first["has_more"] is True
+    assert first["next_offset"] == 5
+    second = query_orders('{"paid_amount_cents":12900,"offset":5}', name="find_orders_by_amount")
+    assert second["orders"] == [{"order_id": "PAGE-4", "paid_at": None}]
+    assert second["has_more"] is False
 
 
 @pytest.mark.parametrize("arguments", [

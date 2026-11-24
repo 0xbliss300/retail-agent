@@ -11,7 +11,7 @@ from app.harness.confirmation import (
     list_resumable_confirmations,
     load_active_confirmation,
 )
-from app.harness.runtime import create_messages, run_agent
+from app.harness.runtime import ConversationState, create_messages, run_agent
 from app.storage.persistence import (
     ConversationConflict,
     list_conversations,
@@ -140,11 +140,17 @@ def main(argv: list[str] | None = None):
             print("待确认操作已结束或已过期；仅恢复聊天历史，本次不执行待确认操作。")
 
     version = snapshot["version"] if snapshot is not None else 0
+    state = ConversationState()
 
     # 保留历史消息及工具调用关系，系统提示词使用当前程序版本。
     messages = create_messages(SYSTEM_PROMPT)
     if snapshot is not None:
         messages.extend(snapshot["messages"][1:])
+        state = ConversationState(
+            cancel_selection=snapshot["cancel_selection"],
+            last_queried_order_id=snapshot["last_queried_order_id"],
+            pending_clarification=snapshot["pending_clarification"],
+        )
         print("已加载之前保存的对话消息。")
     if active is not None:
         is_cancel = active["tool"] == "cancel_order"
@@ -176,16 +182,23 @@ def main(argv: list[str] | None = None):
             client,
             session_id=session_id,
             thread_id=thread_id,
+            state=state,
         )
         print("\n助手：", answer)
 
         # 业务操作可能已经提交；历史保存失败不能导致业务重试。
         try:
+            current = datetime.now(UTC)
+            if state.pending_clarification is not None:
+                state.discard_finished_clarification(load_active_confirmation(**context, now=current))
             version = save_conversation(
                 **context,
                 messages=messages,
-                now=datetime.now(UTC),
+                now=current,
                 expected_version=version,
+                cancel_selection=state.cancel_selection,
+                last_queried_order_id=state.last_queried_order_id,
+                pending_clarification=state.pending_clarification,
             )
         except ConversationConflict:
             print(

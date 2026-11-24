@@ -194,6 +194,7 @@ def prepare_refund_confirmation(
 
 def prepare_cancel_confirmation(
     *, user_id: str, session_id: str, thread_id: str, order_id: str, reason: str, now: datetime,
+    expected_paid_amount_cents: int | None = None,
 ) -> dict:
     """保存取消摘要，不更新订单；批准时必须再次校验业务数据。"""
     if not all(isinstance(v, str) and v.strip() for v in (user_id, session_id, thread_id, order_id, reason)):
@@ -210,6 +211,8 @@ def prepare_cancel_confirmation(
             "ok": False, "error": "POLICY_DENIED",
             "policy_code": eligibility["policy_code"], "reason": eligibility["reason"],
         }
+    if expected_paid_amount_cents is not None and eligibility["amount_cents"] != expected_paid_amount_cents:
+        return {"ok": False, "error": "ORDER_AMOUNT_CHANGED"}
     params = {
         "order_id": order_id, "reason": reason, "order_status": eligibility["order_status"],
         "amount_cents": eligibility["amount_cents"], "paid_at": eligibility["paid_at"],

@@ -7,8 +7,8 @@
 - `POST /chat/stream`：用 SSE 流式返回文本，结束时返回会话编号和待确认操作；
 - `POST /confirm`：显式批准或拒绝待确认操作，不调用模型。
 
-HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。这不是多用户登录，
-只适合本地演示，不能直接暴露到公网。
+订单、退款、聊天、确认和恢复接口都从登录会话取得当前用户身份。首次使用时，
+运行初始化脚本创建[两个本地演示账号](frontend.md#两个账号查单)。
 
 ## 启动
 
@@ -33,22 +33,40 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/health" -Method Get | ConvertTo-Js
 ```json
 {
   "status": "ok",
-  "demo_user_id": "USER-001",
   "version": "0.1.0"
 }
+```
+
+## 登录
+
+`POST /auth/login` 接收 `email` 和 `password`，校验通过后设置有效期为 8 小时的
+`retailops_session` Cookie。后续请求使用同一个客户端。
+`GET /auth/me` 获取当前账号，`POST /auth/logout` 撤销登录会话。
+
+```powershell
+$base = "http://127.0.0.1:8000"
+$credentials = @{ email = "demo@retailops.local"; password = "demo1234" } | ConvertTo-Json
+Invoke-RestMethod -Uri "$base/auth/login" -Method Post -ContentType "application/json" -Body $credentials -SessionVariable loginSession
 ```
 
 ## 开始新对话
 
 ```powershell
 $body = @{ message = "查询我的订单" } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method Post -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Uri "$base/chat" -Method Post -WebSession $loginSession -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 5
 ```
 
 如果 PowerShell 的引号或编码不方便，也可以直接使用 Python 客户端：
 
-```powershell
-conda run -n retail-agent python -c "import httpx; print(httpx.post('http://127.0.0.1:8000/chat', json={'message': '查询我的订单'}).json())"
+```python
+import httpx
+
+with httpx.Client(base_url="http://127.0.0.1:8000") as client:
+    client.post("/auth/login", json={
+        "email": "demo@retailops.local",
+        "password": "demo1234",
+    }).raise_for_status()
+    print(client.post("/chat", json={"message": "查询我的订单"}).json())
 ```
 
 请求体字段：
@@ -80,7 +98,7 @@ $body = @{
     session_id = "sess_..."
     thread_id = "thread_..."
 } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method Post -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Uri "$base/chat" -Method Post -WebSession $loginSession -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 5
 ```
 
 服务端会加载已保存的消息和工具调用关系，继续调用模型；每轮完成后保存完整历史。
@@ -135,7 +153,8 @@ conda run --no-capture-output -n retail-agent python -m scripts.demo_stream --me
 conda run --no-capture-output -n retail-agent python -m scripts.demo_stream --message "查看 ORD-4002 的详情" --session-id "sess_..." --thread-id "thread_..."
 ```
 
-脚本会边接收边打印 `token`，最后打印 `done` 事件的完整 JSON。
+脚本会提示输入账号密码，登录后边接收边打印 `token`，最后打印 `done` 事件的完整 JSON。
+用 `--email demo2@retailops.local` 可选择第二个账号。
 
 ## 高风险操作
 
@@ -162,10 +181,14 @@ conda run --no-capture-output -n retail-agent python -m scripts.demo_stream --me
 
 此时订单和退款数据没有变化，只生成了待确认记录。
 
+等待确认时，在同一个 `session_id` 和 `thread_id` 继续发送问题即可。助手可以解释
+当前操作的影响，或查询订单、物流、退款进度和政策。操作仍可使用原确认编号批准或拒绝，
+有效期按首次发起时计算。若操作在回答期间到期，响应的 `pending_action` 为 `null`。
+
 确认有两种方式：
 
 - **显式接口（推荐给前端）**：调用 `POST /confirm`，直接提交 `approve` 或 `reject`；
-- **自然语言兼容路径**：在 `/chat` 或 `/chat/stream` 的下一条消息中说“确认取消”或“确认提交”。
+- **文字指令**：在 `/chat` 或 `/chat/stream` 单独发送与当前操作对应的指令，例如“确认取消”“确认提交”或“确认撤回”。“确认取消后会怎样？”属于插问。
 
 两条路径使用同一套确认记录和业务服务，服务端都会重新校验上下文、有效期、订单状态和金额。
 
@@ -180,7 +203,7 @@ $body = @{
     confirmation_id = "cfm_..."
     decision = "approve"
 } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://127.0.0.1:8000/confirm" -Method Post -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Uri "$base/confirm" -Method Post -WebSession $loginSession -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) | ConvertTo-Json -Depth 5
 ```
 
 `decision` 只允许：
@@ -211,7 +234,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/confirm" -Method Post -ContentType
 - 重复调用同一确认：返回首次保存的结果，不重复写业务数据。
 - 已过期、已消费、政策不允许或订单状态变化：不执行，返回解释性回复。
 - `/confirm` 不创建模型客户端、不调用模型，只做服务端校验和事务执行。
-- 确认编号必须属于当前 `session_id`、`thread_id` 和固定模拟用户，不能跨会话使用。
+- 确认编号必须属于登录用户及当前 `session_id`、`thread_id`。
 
 ## 历史保存失败
 
@@ -228,10 +251,13 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/confirm" -Method Post -ContentType
 | HTTP 状态 | `detail.error` | 含义 |
 |---:|---|---|
 | 400 | `INVALID_SESSION_CONTEXT` | `session_id` 和 `thread_id` 没有同时提供，或为空 |
+| 401 | `LOGIN_REQUIRED` | 登录会话缺失、失效，或页面账号已切换 |
+| 401 | `INVALID_CREDENTIALS` | 邮箱或密码错误 |
 | 404 | `CONVERSATION_NOT_FOUND` | 对话不存在、已过期，且没有待确认操作 |
 | 404 | `CONFIRMATION_NOT_FOUND` | 当前会话中不存在该确认编号 |
 | 409 | `CONFIRMATION_INVALID` | 确认记录的工具或参数无效 |
 | 422 | `EMPTY_MESSAGE` | `message` 只有空白 |
+| 422 | `INVALID_CREDENTIALS` | 登录字段缺失或格式无效 |
 | 422 | `INVALID_ARGUMENTS` | `/confirm` 的会话或确认编号为空 |
 | 422 | Pydantic 校验错误 | 缺少字段、`decision` 不是 `approve/reject`，或包含 `user_id` 等额外字段 |
 | 502 | `MODEL_ERROR` | 模型服务不可用 |
@@ -242,11 +268,8 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/confirm" -Method Post -ContentType
 
 ## 身份与限制
 
-- 身份固定在服务端：`DEMO_USER_ID = USER-001`，请求体不能覆盖。
-- `session_id` 和 `thread_id` 只用于定位当前模拟用户的对话，不是登录凭证。
-- 当前没有多用户登录、令牌签名或按用户隔离的 HTTP 会话；不要把服务直接暴露给外部用户。
-- 没有前端、LangGraph Checkpointer、Trace 或评测入口。
-- 所有订单、退款和资金结果均为本地模拟数据。
+- 服务端用 Cookie 查找登录会话和账号。对话编号用于定位该账号下的对话。
+- 预置账号、订单、退款和资金结果用于本地演示。
 
 ## 测试
 

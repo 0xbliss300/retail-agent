@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,8 @@ class LLMEvalCase:
     confirmation_message: str | None
     expected_tool_calls: list[dict[str, Any]]
     expected: dict[str, Any]
+    additional_orders: list[dict[str, Any]] = field(default_factory=list)
+    followup_messages: list[str] = field(default_factory=list)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -54,25 +56,28 @@ def _parse_expected_tool_calls(case_id: str, raw: object) -> list[dict[str, Any]
                 isinstance(item["error"], str) and bool(item["error"]),
                 f"{case_id}: expected_tool_calls 第 {index} 项 error 必须是非空字符串",
             )
+        if "order_id" in item:
+            _require(
+                isinstance(item["order_id"], str) and bool(item["order_id"].strip()),
+                f"{case_id}: expected_tool_calls 第 {index} 项 order_id 必须是非空字符串",
+            )
+        if "paid_amount_cents" in item:
+            _require(
+                type(item["paid_amount_cents"]) is int and item["paid_amount_cents"] >= 0,
+                f"{case_id}: expected_tool_calls 第 {index} 项 paid_amount_cents 必须是非负整数",
+            )
+        if "turn" in item:
+            _require(
+                type(item["turn"]) is int and item["turn"] >= 1,
+                f"{case_id}: expected_tool_calls 第 {index} 项 turn 必须是正整数",
+            )
         calls.append(dict(item))
     return calls
 
 
-def _parse_case(data: dict) -> LLMEvalCase:
-    case_id = data.get("case_id")
-    user_id = data.get("user_id")
-    _require(isinstance(case_id, str) and bool(case_id.strip()), "case_id 不能为空")
-    _require(
-        CASE_ID_PATTERN.fullmatch(case_id) is not None,
-        f"case_id 只能包含字母、数字、下划线和连字符: {case_id}",
-    )
-    _require(
-        isinstance(user_id, str) and bool(user_id.strip()),
-        f"{case_id}: user_id 不能为空",
-    )
-
-    order = data.get("order")
-    _require(isinstance(order, dict), f"{case_id}: order 必须是对象")
+def _parse_order(case_id: str, order: object) -> dict:
+    if not isinstance(order, dict):
+        raise ValueError(f"{case_id}: order 必须是对象")
     for key in ("order_id", "status", "paid_amount_cents", "paid_minutes_ago"):
         _require(key in order, f"{case_id}: order 缺少 {key}")
     _require(
@@ -102,6 +107,39 @@ def _parse_case(data: dict) -> LLMEvalCase:
             f"{case_id}: 发货时间不能早于付款时间",
         )
 
+    if "shipment" in order:
+        shipment = order["shipment"]
+        _require(order["status"] == "shipped", f"{case_id}: 只有已发货订单可以预置物流")
+        _require(
+            isinstance(shipment, dict) and all(
+                isinstance(shipment.get(key), str) and bool(shipment[key].strip())
+                for key in ("carrier", "tracking_number", "description")
+            ),
+            f"{case_id}: shipment 必须提供承运商、运单号和轨迹描述",
+        )
+    return order
+
+
+def _parse_case(data: dict) -> LLMEvalCase:
+    case_id = data.get("case_id")
+    user_id = data.get("user_id")
+    _require(isinstance(case_id, str) and bool(case_id.strip()), "case_id 不能为空")
+    _require(
+        CASE_ID_PATTERN.fullmatch(case_id) is not None,
+        f"case_id 只能包含字母、数字、下划线和连字符: {case_id}",
+    )
+    _require(
+        isinstance(user_id, str) and bool(user_id.strip()),
+        f"{case_id}: user_id 不能为空",
+    )
+
+    order = _parse_order(case_id, data.get("order"))
+    extra_orders = data.get("additional_orders", [])
+    _require(isinstance(extra_orders, list), f"{case_id}: additional_orders 必须是数组")
+    additional_orders = [_parse_order(case_id, item) for item in extra_orders]
+    order_ids = {item["order_id"] for item in [order, *additional_orders]}
+    _require(len(order_ids) == 1 + len(additional_orders), f"{case_id}: 订单号重复")
+
     user_messages = data.get("user_messages")
     _require(
         isinstance(user_messages, list) and bool(user_messages),
@@ -118,6 +156,15 @@ def _parse_case(data: dict) -> LLMEvalCase:
             isinstance(confirmation_message, str) and bool(confirmation_message.strip()),
             f"{case_id}: confirmation_message 必须是非空字符串或 null",
         )
+    followup_messages = data.get("followup_messages", [])
+    _require(
+        isinstance(followup_messages, list) and all(
+            isinstance(message, str) and message.strip() for message in followup_messages
+        ),
+        f"{case_id}: followup_messages 必须是非空字符串数组，允许没有插问",
+    )
+    if followup_messages:
+        _require(confirmation_message is not None, f"{case_id}: 插问需要 confirmation_message")
 
     expected_tool_calls = _parse_expected_tool_calls(
         case_id,
@@ -126,6 +173,26 @@ def _parse_case(data: dict) -> LLMEvalCase:
 
     expected = data.get("expected")
     _require(isinstance(expected, dict), f"{case_id}: expected 必须是对象")
+    _require(
+        isinstance(expected.get("exact_tool_calls", False), bool),
+        f"{case_id}: expected.exact_tool_calls 必须是布尔值",
+    )
+    if "reply_contains" in expected:
+        reply_contains = expected["reply_contains"]
+        _require(
+            isinstance(reply_contains, list) and len(reply_contains) == len(user_messages)
+            and all(isinstance(terms, list) and terms and all(
+                isinstance(term, str) and term.strip() for term in terms
+            ) for terms in reply_contains),
+            f"{case_id}: expected.reply_contains 必须为每条用户消息提供一组非空关键词",
+        )
+    if "followup_reply_amount_cents" in expected:
+        amounts = expected["followup_reply_amount_cents"]
+        _require(
+            isinstance(amounts, list) and bool(followup_messages) and len(amounts) == len(followup_messages)
+            and all(type(amount) is int and amount >= 0 for amount in amounts),
+            f"{case_id}: expected.followup_reply_amount_cents 必须为每条插问提供一个非负整数金额",
+        )
     for key in ("outcome", "order_status", "refund_count", "confirmation_count", "operation_logs"):
         _require(key in expected, f"{case_id}: expected 缺少 {key}")
     outcome = expected["outcome"]
@@ -248,6 +315,8 @@ def _parse_case(data: dict) -> LLMEvalCase:
         confirmation_message=confirmation_message,
         expected_tool_calls=expected_tool_calls,
         expected=normalized_expected,
+        additional_orders=additional_orders,
+        followup_messages=followup_messages,
     )
 
 

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import { post, setWorkspaceAccount } from "../api.js";
 import Icon, { BrandMark, PackageGlyph } from "../components/Icons.jsx";
 import StatusPill from "../components/StatusPill.jsx";
-import { loadProfile, saveProfile } from "../storage.js";
 
 const TRACK = [
   { label: "已揽收", time: "1月20日 10:24", state: "done" },
@@ -19,17 +19,12 @@ export default function LoginPage() {
   const [email, setEmail] = useState(DEMO_EMAIL);
   const [password, setPassword] = useState(DEMO_PASSWORD);
   const [visible, setVisible] = useState(false);
-  const [remember, setRemember] = useState(true);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const enterWorkspace = (account) => {
-    const profile = loadProfile();
-    saveProfile({ ...profile, email: account });
-    navigate("/app");
-  };
-
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault();
+    if (submitting) return;
     if (!email.trim()) {
       setError("请输入邮箱地址。");
       return;
@@ -43,7 +38,15 @@ export default function LoginPage() {
       return;
     }
     setError("");
-    enterWorkspace(email.trim());
+    setSubmitting(true);
+    try {
+      const account = await post("/auth/login", { email: email.trim(), password });
+      setWorkspaceAccount(account.user_id);
+      navigate("/app", { replace: true });
+    } catch (failure) {
+      setError(failure.message);
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -139,31 +142,15 @@ export default function LoginPage() {
             </span>
           </label>
 
-          <label className="checkbox" style={{ marginBottom: 18 }}>
-            <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
-            记住我
-          </label>
+          {error ? <div className="form-error" role="alert">{error}</div> : null}
 
-          {error ? <div className="form-error">{error}</div> : null}
-
-          <button className="btn btn--primary btn--block auth__submit" type="submit">
-            登录
+          <button className="btn btn--primary btn--block auth__submit" type="submit" disabled={submitting}>
+            {submitting ? "正在登录…" : "登录"}
           </button>
 
-          <p className="auth__switch">
-            还没有账号？
-            <Link to="/register">立即注册</Link>
+          <p className="auth__footnote">
+            已填入账号 A。体验账号 B 时，输入 demo2@retailops.local，密码 demo5678。
           </p>
-
-          <button
-            className="auth__direct"
-            type="button"
-            onClick={() => enterWorkspace(DEMO_EMAIL)}
-          >
-            使用演示账号直接进入工作台
-          </button>
-
-          <p className="auth__footnote">演示环境：账号已预填，登录不校验密码，信息仅保存在本机。</p>
         </form>
       </div>
 

@@ -18,7 +18,7 @@
 
 | `last_state` | 含义 |
 |---|---|
-| `null` | 该会话从未发起过高风险操作 |
+| `null` | 当前账号和会话下未找到对应操作 |
 | `rejected` | 用户主动拒绝 |
 | `expired` | 确认超时，不会再执行 |
 | `consumed` | 已执行（此时 `state` 是 `executed`） |
@@ -36,9 +36,9 @@
 ## 接口
 
 ```bash
-curl -s http://localhost:8000/recover \
+curl -s -b cookies.txt http://127.0.0.1:8000/recover \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"sess_xxx","thread_id":"thread_xxx"}'
+  -d '{"session_id":"sess_xxx","thread_id":"thread_xxx","confirmation_id":"cfm_xxx"}'
 ```
 
 响应：
@@ -60,7 +60,8 @@ curl -s http://localhost:8000/recover \
 }
 ```
 
-身份仍由服务端注入（演示环境固定 `USER-001`），请求体不接受 `user_id`。
+使用同一账号登录时保存的 Cookie 文件。保存方法见 [README 确认接口](../README.md#103-确认接口)。
+请求体接受对话编号和可选的 `confirmation_id`。省略确认编号时查询该对话最近一条确认记录。
 换用户或换 `thread_id` 查不到别人的记录，统一返回 `idle`，不泄露操作是否存在。
 
 ## 运行与验收
@@ -87,13 +88,28 @@ conda run -n retail-agent python -m pytest tests/test_recovery.py -q
 
 客户端推荐的调用顺序：
 
-1. 发出 `/chat`，拿到 `session_id`、`thread_id` 与 `pending_action`；
-2. 请求超时或连接断开，重连后先调 `/recover`；
-3. `executed` 直接展示结果，`awaiting_confirmation` 用 `pending_action` 里的编号继续确认，
-   `idle` 才重新发起新的自然语言请求。
+1. 取消确认前，将 `pending_action.confirmation_id` 和服务器对话编号一同保存到当前账号的网页对话记录，再调用 `/confirm`。
+2. 刷新、重开对话或点击「重新查询」时，用原编号调用 `/recover`。服务端按登录身份、会话和确认编号检索。
+3. `executed` 显示取消结果和模拟退款流水。`awaiting_confirmation` 恢复确认卡，再次确认沿用原编号。查询失败或找不到记录时，可重新查询。
+
+## 网页模拟验收
+
+从项目根目录运行以下命令。演示服务使用临时 SQLite 数据库和离线模型替身，订单取消、确认、查询和退款流水走项目的实际实现。
+
+```powershell
+npm --prefix frontend run build
+conda run --no-capture-output -n retail-agent python -m scripts.demo_cancel_recovery
+```
+
+1. 打开 `http://127.0.0.1:8765`，用 `demo@retailops.local` / `demo1234` 登录。
+2. 发送「取消 ORD-3002，不需要了」，然后点击「确认取消订单」。演示服务提交数据库事务后丢弃第一次取消响应。
+3. 终端出现 `ORD-3002 canceled，模拟退款流水 1 条` 后刷新浏览器。也可以等网页显示「暂未查到结果」再刷新。
+4. 确认卡变成「订单取消结果」，显示 `ORD-3002` 和「已取消」。结果卡的模拟退款流水号应与终端打印的一致。
+
+停止演示服务后，本次数据库随临时目录清理。重启演示服务即可用同一订单重新演示。
 
 ## 当前限制
 
-- 只查最近一条确认记录，不返回该会话的完整操作历史。
+- 每次查询返回一条确认记录。网页恢复入口随当前浏览器标签页的最近对话保留。
 - `idle` 不区分「没有操作」与「操作早已结束」，需要看 `last_state`。
 - 不做自动重试：恢复只负责告诉客户端发生了什么，重试与否由调用方决定。

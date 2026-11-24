@@ -147,12 +147,13 @@ def test_other_user_cannot_see_operation(recoverable):
     assert result["last_state"] is None
 
 
-def test_http_recover_reports_executed(recoverable):
+def test_http_recover_reports_executed(recoverable, login_demo):
     confirmation_id = prepare(recoverable)
     service.approve_cancel_confirmation(
         **recoverable, confirmation_id=confirmation_id, now=NOW,
     )
     client = TestClient(app)
+    login_demo(client)
 
     response = client.post(
         "/recover",
@@ -168,7 +169,7 @@ def test_http_recover_reports_executed(recoverable):
     assert body["result"]["status"] == "canceled"
 
 
-def test_http_recover_reports_pending(recoverable):
+def test_http_recover_reports_pending(recoverable, login_demo):
     # 接口用真实时钟判断是否过期，因此这里按当前时间构造订单与确认记录。
     now = datetime.now(UTC)
     conn = database.get_connection()
@@ -189,6 +190,7 @@ def test_http_recover_reports_pending(recoverable):
         **recoverable, order_id="ORD-R2", reason="不想要了", now=now,
     )
     client = TestClient(app)
+    login_demo(client)
 
     response = client.post(
         "/recover",
@@ -202,8 +204,37 @@ def test_http_recover_reports_pending(recoverable):
     assert response.json()["state"] == "awaiting_confirmation"
 
 
-def test_http_recover_rejects_empty_context(recoverable):
+def test_http_recover_uses_confirmation_id_and_current_account(recoverable, login_demo):
+    now = datetime.now(UTC)
+    conn = database.get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE orders SET paid_at = ? WHERE order_id = 'ORD-R1'",
+                ((now - timedelta(hours=1)).isoformat(),),
+            )
+    finally:
+        conn.close()
+
+    old_id = prepare(recoverable, now)
+    reject_confirmation(**recoverable, confirmation_id=old_id, now=now)
+    latest_id = prepare(recoverable, now)
+    request = {key: recoverable[key] for key in ("session_id", "thread_id")}
+    with TestClient(app) as client:
+        login_demo(client)
+        assert client.post("/recover", json=request).json()["confirmation_id"] == latest_id
+        old_request = {**request, "confirmation_id": old_id}
+        assert client.post("/recover", json=old_request).json()["last_state"] == "rejected"
+
+        login_demo(client, second=True)
+        body = client.post("/recover", json=old_request).json()
+        assert body["state"] == "idle"
+        assert body["order_id"] is None
+
+
+def test_http_recover_rejects_empty_context(recoverable, login_demo):
     client = TestClient(app)
+    login_demo(client)
 
     response = client.post(
         "/recover", json={"session_id": "", "thread_id": "t"},

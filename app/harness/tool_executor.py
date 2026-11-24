@@ -10,6 +10,7 @@ from time import monotonic
 
 from app.business.tools import (
     check_refund_eligibility,
+    find_orders_by_amount,
     get_logistics,
     get_order,
     get_policy,
@@ -32,6 +33,8 @@ from app.harness.recovery import (
 from app.observability.tracing import emit_trace
 
 TOOL_TIMEOUT_SECONDS = 5.0
+PENDING_QUESTION_TOOLS = frozenset({"get_order", "get_logistics", "get_refund_status", "get_policy"})
+PENDING_TOOL_NOT_ALLOWED = "PENDING_CONFIRMATION_TOOL_NOT_ALLOWED"
 
 
 class _InvalidArguments(ValueError):
@@ -51,6 +54,7 @@ def _resolve_handler(
     session_id: str | None,
     thread_id: str | None,
     now: datetime | None,
+    expected_cancel_amount: int | None,
 ) -> Callable[[], dict]:
     """校验参数并返回真正执行工具的零参数函数。"""
     if name == "list_orders":
@@ -61,6 +65,20 @@ def _resolve_handler(
             user_id=user_id,
             limit=args.get("limit", 10),
             offset=args.get("offset", 0),
+        )
+
+    if name == "find_orders_by_amount":
+        allowed = {"paid_amount_cents", "offset", "purpose", "reason"}
+        if "paid_amount_cents" not in args or set(args) - allowed:
+            raise _InvalidArguments
+        if "purpose" in args and args["purpose"] != "cancel_order":
+            raise _InvalidArguments
+        if "reason" in args:
+            if args.get("purpose") != "cancel_order":
+                raise _InvalidArguments
+            _require_text(args["reason"])
+        return lambda: find_orders_by_amount(
+            user_id=user_id, paid_amount_cents=args["paid_amount_cents"], offset=args.get("offset", 0),
         )
 
     if name == "list_refunds":
@@ -108,6 +126,10 @@ def _resolve_handler(
             if name == "cancel_order"
             else prepare_refund_confirmation
         )
+        trusted_args = (
+            {"expected_paid_amount_cents": expected_cancel_amount}
+            if name == "cancel_order" and expected_cancel_amount is not None else {}
+        )
         return lambda: prepare(
             user_id=user_id,
             session_id=session_id,
@@ -115,6 +137,7 @@ def _resolve_handler(
             order_id=args["order_id"],
             reason=args["reason"],
             now=now if now is not None else datetime.now(UTC),
+            **trusted_args,
         )
 
     if name in {"get_logistics", "get_order", "check_refund_eligibility", "get_refund_status"}:
@@ -138,7 +161,7 @@ def _resolve_handler(
         if set(args) != {"topic"}:
             raise _InvalidArguments
         topic = args["topic"]
-        if not isinstance(topic, str) or topic not in {"cancellation", "refund"}:
+        if not isinstance(topic, str) or topic not in {"cancellation", "refund", "withdraw"}:
             raise _InvalidArguments
         return lambda: get_policy(topic=topic)
 
@@ -218,9 +241,14 @@ def execute_tool(
     thread_id: str | None = None,
     now: datetime | None = None,
     trace_id: str | None = None,
+    logistics_order_id: str | None = None,
+    expected_cancel_amount: int | None = None,
+    pending_question: bool = False,
 ) -> dict:
     name = tool_call.function.name
 
+    if pending_question and name not in PENDING_QUESTION_TOOLS:
+        return _rejected(name, PENDING_TOOL_NOT_ALLOWED, trace_id)
     if name not in READ_ONLY_TOOLS | WRITE_TOOLS:
         return _rejected(name, "UNKNOWN_TOOL", trace_id)
 
@@ -232,6 +260,13 @@ def execute_tool(
     if not isinstance(args, dict):
         return _rejected(name, "INVALID_ARGUMENTS", trace_id)
 
+    if (
+        name == "get_logistics"
+        and logistics_order_id is not None
+        and args.get("order_id") != logistics_order_id
+    ):
+        return _rejected(name, "ORDER_SELECTION_MISMATCH", trace_id)
+
     try:
         handler = _resolve_handler(
             name,
@@ -240,6 +275,7 @@ def execute_tool(
             session_id,
             thread_id,
             now,
+            expected_cancel_amount,
         )
     except _InvalidArguments:
         return _rejected(name, "INVALID_ARGUMENTS", trace_id)
@@ -258,6 +294,14 @@ def execute_tool(
         result, attempts = {"ok": False, "error": "TOOL_ERROR"}, 0
 
     duration_ms = round((monotonic() - started) * 1000, 2)
+    trace_details = {}
+    if result.get("ok") is True:
+        if name == "get_logistics" and "order_id" in result:
+            trace_details["order_id"] = result["order_id"]
+        elif name == "find_orders_by_amount":
+            trace_details["paid_amount_cents"] = result["paid_amount_cents"]
+            if args.get("purpose") == "cancel_order":
+                result["cancel_reason"] = args.get("reason", "未说明")
     emit_trace(
         "tool.call",
         run_id=trace_id,
@@ -267,6 +311,7 @@ def execute_tool(
         error=result.get("error"),
         attempts=attempts,
         duration_ms=duration_ms,
+        **trace_details,
     )
 
     if result.get("status") == "awaiting_confirmation":

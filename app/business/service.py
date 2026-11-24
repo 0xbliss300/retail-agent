@@ -81,6 +81,31 @@ def list_orders(*, user_id: str, limit: int = 10, offset: int = 0) -> dict:
     }
 
 
+def find_orders_by_amount(*, user_id: str, paid_amount_cents: int, offset: int = 0) -> dict:
+    """按实付金额查本人订单，返回用于确认订单的精简候选。"""
+    if not isinstance(user_id, str) or not user_id.strip():
+        return {"ok": False, "error": "MISSING_CONTEXT"}
+    if (
+        type(paid_amount_cents) is not int or not 0 <= paid_amount_cents <= 2**63 - 1
+        or type(offset) is not int or not 0 <= offset <= 2**63 - 1
+    ):
+        return {"ok": False, "error": "INVALID_ARGUMENTS"}
+
+    page_size = 5
+    rows = get_orders_for_user(
+        user_id=user_id, paid_amount_cents=paid_amount_cents, limit=page_size + 1, offset=offset,
+    )
+    has_more = len(rows) > page_size
+    return {
+        "ok": True,
+        "paid_amount_cents": paid_amount_cents,
+        "orders": [{"order_id": row["order_id"], "paid_at": row["paid_at"]} for row in rows[:page_size]],
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + page_size if has_more else None,
+    }
+
+
 REFUND_STATUSES = frozenset({
     "pending", "approved", "rejected", "completed", "failed", "withdrawn",
 })

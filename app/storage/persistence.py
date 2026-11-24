@@ -47,6 +47,9 @@ def save_conversation(
     messages: list,
     now: datetime,
     expected_version: int,
+    cancel_selection: dict | None = None,
+    last_queried_order_id: str | None = None,
+    pending_clarification: dict | None = None,
 ) -> int:
     """首次保存传0，后续保存传读取时的版本；返回新版本。"""
     context = {
@@ -92,6 +95,13 @@ def save_conversation(
         **context,
         "title": " ".join(first_question.split())[:60],
         "messages_json": json.dumps(messages, ensure_ascii=False),
+        "cancel_selection_json": (
+            json.dumps(cancel_selection, ensure_ascii=False) if cancel_selection is not None else None
+        ),
+        "last_queried_order_id": last_queried_order_id,
+        "pending_clarification_json": (
+            json.dumps(pending_clarification, ensure_ascii=False) if pending_clarification is not None else None
+        ),
         "version": new_version,
         "expected_version": expected_version,
         "timestamp": timestamp,
@@ -107,12 +117,14 @@ def save_conversation(
                     """
                     INSERT INTO chat_threads (
                         user_id, session_id, thread_id,
-                        title, messages_json, version,
+                        title, messages_json, cancel_selection_json,
+                        last_queried_order_id, pending_clarification_json, version,
                         created_at, updated_at
                     )
                     VALUES (
                         :user_id, :session_id, :thread_id,
-                        :title, :messages_json, :version,
+                        :title, :messages_json, :cancel_selection_json,
+                        :last_queried_order_id, :pending_clarification_json, :version,
                         :timestamp, :timestamp
                     )
                     ON CONFLICT(user_id, session_id, thread_id)
@@ -126,6 +138,9 @@ def save_conversation(
                     UPDATE chat_threads
                     SET title = :title,
                         messages_json = :messages_json,
+                        cancel_selection_json = :cancel_selection_json,
+                        last_queried_order_id = :last_queried_order_id,
+                        pending_clarification_json = :pending_clarification_json,
                         version = :version,
                         updated_at = :timestamp
                     WHERE user_id = :user_id
@@ -158,7 +173,8 @@ def load_conversation(
     try:
         row = conn.execute(
             """
-            SELECT title, messages_json, version, created_at, updated_at
+            SELECT title, messages_json, cancel_selection_json, last_queried_order_id,
+                   pending_clarification_json, version, created_at, updated_at
             FROM chat_threads
             WHERE user_id = ?
               AND session_id = ?
@@ -172,7 +188,16 @@ def load_conversation(
             return None
 
         result = dict(row)
-        result["messages"] = json.loads(result.pop("messages_json"))
+        messages = json.loads(result.pop("messages_json"))
+        selection_json = result.pop("cancel_selection_json")
+        clarification_json = result.pop("pending_clarification_json")
+        result["pending_clarification"] = json.loads(clarification_json) if clarification_json is not None else None
+        result["messages"] = messages
+        # 老快照只在最后一条回复携带当前候选页。
+        if selection_json is not None:
+            result["cancel_selection"] = json.loads(selection_json)
+        else:
+            result["cancel_selection"] = messages[-1].get("cancel_selection") if messages else None
         return result
     finally:
         conn.close()

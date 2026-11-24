@@ -8,16 +8,21 @@
 
 import json
 from collections.abc import Generator
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from time import monotonic
+from types import SimpleNamespace
 
-from app.agent.confirmation_intent import classify_confirmation_intent
+from app.agent.confirmation_intent import classify_confirmation_intent, confirmation_command
 from app.agent.model_client import request_model, stream_model
+from app.agent.prompts import PENDING_QUESTION_PROMPT
 from app.agent.scope import SCOPE_REFUSAL, off_topic_reason
 from app.business.service import (
     approve_cancel_confirmation,
     approve_refund_confirmation,
     approve_withdraw_confirmation,
+    check_cancel_eligibility,
 )
 from app.business.tools import TOOLS
 from app.harness.budget import (
@@ -27,8 +32,36 @@ from app.harness.budget import (
 )
 from app.harness.confirmation import load_active_confirmation, reject_confirmation
 from app.harness.context import trim_messages
-from app.harness.tool_executor import execute_tool
+from app.harness.order_selection import (
+    asks_cancel_eligibility,
+    cancel_amount_cents,
+    order_reference,
+    requires_cancel_lookup,
+    selected_order,
+)
+from app.harness.tool_executor import PENDING_QUESTION_TOOLS, PENDING_TOOL_NOT_ALLOWED, execute_tool
 from app.observability.tracing import emit_trace, new_run_id
+
+PENDING_QUESTION_TOOL_SCHEMAS = [
+    tool for tool in TOOLS if tool["function"]["name"] in PENDING_QUESTION_TOOLS
+]
+
+
+@dataclass
+class ConversationState:
+    """跨轮保留的订单选择和指代状态。"""
+
+    cancel_selection: dict | None = None
+    last_queried_order_id: str | None = None
+    pending_clarification: dict | None = None
+
+    def discard_finished_clarification(self, active: dict | None) -> None:
+        clarification = self.pending_clarification
+        if clarification is not None and (
+            active is None or active["status"] != "pending"
+            or active["confirmation_id"] != clarification["confirmation_id"]
+        ):
+            self.pending_clarification = None
 
 
 def create_messages(system_prompt: str) -> list:
@@ -43,6 +76,7 @@ TOOL_FAILURE_ANSWERS = {
     ),
     "TOOL_BUSY": "当前数据库繁忙，本次操作未完成。请稍后重试。",
     "TOOL_ERROR": "工具执行失败，本次操作未完成。请稍后重试。",
+    "ORDER_SELECTION_MISMATCH": "查询的订单号与按金额找到的订单不一致。请核对后提供订单号。",
 }
 
 
@@ -58,25 +92,54 @@ def _single_tool_failure_answer(tool_calls: list, tool_results: list) -> str | N
     return _tool_failure_answer(tool_results[0])
 
 
+def _order_lookup_answer(result: dict) -> str:
+    yuan, cents = divmod(result["paid_amount_cents"], 100)
+    amount = f"{yuan}.{cents:02d}元" if cents else f"{yuan}元"
+    orders = result["orders"]
+    if not orders:
+        if result["offset"]:
+            return f"{amount}的订单候选已显示完。你可以告诉我其中一个订单号。"
+        return f"没有找到实付{amount}的本人订单。请核对金额，或提供订单号。"
+
+    if "cancel_reason" in result:
+        candidates = "\n".join(
+            f"{index}. {order['order_id']}（付款时间：{order['paid_at'] or '未记录'}）"
+            for index, order in enumerate(orders, start=1)
+        )
+        more = "你也可以说“看更多”查看下一页。" if result["has_more"] else ""
+        return (
+            f"实付{amount}的订单候选如下。请回复订单号或“选第二笔”等序号，"
+            f"也可以先询问取消政策，或回复“算了”退出选择。{more}\n{candidates}"
+        )
+
+    candidates = "\n".join(
+        f"- {order['order_id']}（付款时间：{order['paid_at'] or '未记录'}）" for order in orders
+    )
+    answer = f"实付{amount}的订单候选如下。请选择要查询物流的订单号。\n{candidates}"
+    if result["has_more"]:
+        answer += "\n还有其他候选，你也可以说“看更多”。"
+    return answer
+
+
 def _confirmation_answer(record: dict) -> str:
     if record.get("tool") == "cancel_order":
         return (
             f"{record['summary']}\n确认编号：{record['confirmation_id']}\n"
             f"有效期至：{record['expires_at']}\n"
-            "本次取消尚未执行。你可以说“确认取消”，或“算了，不取消了”。"
+            "本次取消尚未执行。你可以先提问，也可以说“确认取消”或“算了，不取消了”。"
         )
     if record.get("tool") == "cancel_refund":
         return (
             f"{record['summary']}\n确认编号：{record['confirmation_id']}\n"
             f"有效期至：{record['expires_at']}\n"
-            "当前退款申请尚未撤回。你可以说“确认撤回”，或“算了，不撤了」。"
+            "当前退款申请尚未撤回。你可以先提问，也可以说“确认撤回”或“算了，不撤了”。"
         )
     return (
         f"{record['summary']}\n"
         f"确认编号：{record['confirmation_id']}\n"
         f"有效期至：{record['expires_at']}\n"
         "当前尚未创建退款申请。"
-        "你可以说“确认提交”，或“算了，不申请了”。"
+        "你可以先提问，也可以说“确认提交”或“算了，不申请了”。"
     )
 
 
@@ -166,11 +229,16 @@ def _handle_pending_confirmation(
     *,
     now: datetime | None,
     trace_id: str | None = None,
-) -> str:
+) -> str | None:
+    """处理明确指令；返回 None 时，本轮继续只读问答。"""
     if active["status"] == "approved":
         return "当前线程有已批准且尚未结束的操作，请先处理该操作。"
     if active["tool"] not in {"cancel_order", "create_refund", "cancel_refund"}:
         return "无法识别当前待确认操作，本次未执行。"
+
+    expected_intent = confirmation_command(user_message, tool=active["tool"])
+    if expected_intent is None:
+        return None
 
     intent = classify_confirmation_intent(
         client,
@@ -183,7 +251,7 @@ def _handle_pending_confirmation(
         tool=active["tool"],
         intent=intent,
     )
-    if intent == "other":
+    if intent != expected_intent:
         return (
             "尚未识别到明确的确认或拒绝决定，当前操作继续等待。\n"
             + _confirmation_answer(active)
@@ -222,6 +290,78 @@ def _handle_pending_confirmation(
     return format_confirmation_result(tool=active["tool"], result=result)
 
 
+def _pending_cancel_eligibility(
+    message: str, active: dict, state: ConversationState, *, now: datetime,
+) -> str | None:
+    """仅续答绑定于当前取消确认的资格问题。"""
+    clarification = state.pending_clarification
+    is_question = asks_cancel_eligibility(message)
+    if not is_question and clarification is None:
+        return None
+
+    pending_id = clarification["pending_order_id"] if clarification else active["order_id"]
+    queried_id = clarification["queried_order_id"] if clarification else state.last_queried_order_id
+    reference = order_reference(message, choice_only=not is_question)
+    if not is_question and reference not in {"pending", "queried", pending_id.upper(), queried_id.upper()}:
+        # 新查询交给常规只读问答。含糊短答继续等待用户点明候选。
+        if off_topic_reason(message) or any(word in message for word in (
+            "查", "退款", "物流", "发货", "付款", "政策", "取消", "换个话题", "不问了",
+        )):
+            state.pending_clarification = None
+            return None
+        reference = None
+
+    if reference is None and queried_id and queried_id != pending_id:
+        state.pending_clarification = {
+            "kind": "cancel_eligibility",
+            "pending_order_id": pending_id,
+            "queried_order_id": queried_id,
+            "confirmation_id": active["confirmation_id"],
+        }
+        return f"你问哪笔订单能否取消？A 是正在等取消确认的 {pending_id}，B 是刚查过的 {queried_id}。"
+
+    state.pending_clarification = None
+    order_id = {"pending": pending_id, "queried": queried_id, None: pending_id}.get(reference, reference)
+    if order_id is None:
+        return "当前会话还没有最近查过的订单。请提供订单号。"
+    if order_id == pending_id.upper():
+        order_id = pending_id
+    elif queried_id and order_id == queried_id.upper():
+        order_id = queried_id
+    result = check_cancel_eligibility(user_id=active["user_id"], order_id=order_id, now=now)
+    if not result.get("ok"):
+        return "未找到该订单。请核对订单号。"
+    verdict = "可以取消" if result["eligible"] else "不能取消"
+    return f"订单 {order_id} {verdict}。{result['reason']}"
+
+
+def _pending_question_messages(
+    messages: list, user_index: int, active: dict, last_queried_order_id: str | None,
+) -> list:
+    """仅为模型构造本轮的操作快照，原始聊天历史照常保存。"""
+    model_messages = messages.copy()
+    model_messages[user_index] = {
+        "role": "user",
+        "content": json.dumps(
+            {
+                "pending_action": {key: active[key] for key in ("order_id", "tool", "summary")},
+                "last_queried_order_id": last_queried_order_id,
+                "current_user_message": messages[user_index]["content"],
+            },
+            ensure_ascii=False,
+        ),
+    }
+    if model_messages[0]["role"] == "system":
+        system = model_messages[0]
+        model_messages[0] = {
+            **system,
+            "content": f"{system['content']}\n\n{PENDING_QUESTION_PROMPT}",
+        }
+    else:
+        model_messages.insert(0, {"role": "system", "content": PENDING_QUESTION_PROMPT})
+    return model_messages
+
+
 def _token_event(text: str) -> dict:
     return {"event": "token", "data": {"text": text}}
 
@@ -237,6 +377,85 @@ def _emit_answer(messages: list, answer: str, *, stream: bool):
         yield _token_event(answer)
 
 
+def _automatic_tool(
+    call_tool, name: str, args: dict, budget: ExecutionBudget, trace_id: str, **context,
+) -> dict:
+    expired = budget.expired()
+    if expired or not budget.has_tool_quota():
+        error = "duration" if expired else "tool_calls"
+        emit_trace("budget.exceeded", run_id=trace_id, kind=error, **budget.snapshot())
+        answer = TIME_BUDGET_ANSWER if error == "duration" else TOOL_BUDGET_ANSWER
+        return {"ok": False, "answer": answer}
+    budget.consume_tool()
+    function = SimpleNamespace(name=name, arguments=json.dumps(args, ensure_ascii=False))
+    call = SimpleNamespace(function=function)
+    return call_tool(call, **context)
+
+
+def _cancel_target(call_tool, lookup: dict, order_id: str, budget: ExecutionBudget, trace_id: str) -> str:
+    result = _automatic_tool(
+        call_tool, "cancel_order", {"order_id": order_id, "reason": lookup["cancel_reason"]},
+        budget, trace_id, expected_cancel_amount=lookup["paid_amount_cents"],
+    )
+    if result.get("status") == "awaiting_confirmation":
+        return _confirmation_answer(result)
+    if result.get("error") == "POLICY_DENIED":
+        next_step = (
+            "你可以查询物流或退款资格。"
+            if result["policy_code"] in {"STATUS_NOT_SUPPORTED", "ORDER_ALREADY_FULFILLED"} else
+            "你可以查询订单状态或联系售后。"
+        )
+        return f"订单 {order_id} 无法取消。{result['reason']}{next_step}"
+    if result.get("error") == "ORDER_AMOUNT_CHANGED":
+        return f"订单 {order_id} 的实付金额已变化。请核对金额后重新发起取消。"
+    if result.get("error") == "ORDER_NOT_FOUND":
+        return "未找到该本人订单。请核对订单号，或重新按金额查找。"
+    return result.get("answer") or _tool_failure_answer(result) or "未能准备取消。请先查询订单状态。"
+
+
+def _cancel_lookup_reply(
+    lookup: dict, call_tool, budget: ExecutionBudget, trace_id: str,
+) -> tuple[str, dict | None]:
+    if not lookup.get("ok"):
+        answer = (
+            lookup.get("answer") or _tool_failure_answer(lookup) or "暂时无法查找订单，请核对金额后重试。"
+        )
+        return answer, None
+    orders = lookup["orders"]
+    if lookup["offset"] == 0 and len(orders) == 1 and not lookup["has_more"]:
+        return _cancel_target(call_tool, lookup, orders[0]["order_id"], budget, trace_id), None
+    return _order_lookup_answer(lookup), lookup if orders else None
+
+
+def _continue_cancel_selection(
+    message: str, lookup: dict, call_tool, budget: ExecutionBudget, trace_id: str,
+) -> tuple[str, dict | None]:
+    choice = message.strip().rstrip("。！!.").strip()
+    if choice in {"算了", "不取消了", "放弃", "放弃取消"}:
+        return "已退出本次订单选择。", None
+    if order_id := selected_order(choice, lookup["orders"]):
+        return _cancel_target(call_tool, lookup, order_id, budget, trace_id), None
+    if any(phrase in choice for phrase in ("取消政策", "取消规则", "取消订单的政策", "取消订单的规则")):
+        result = _automatic_tool(call_tool, "get_policy", {"topic": "cancellation"}, budget, trace_id)
+        if result.get("ok"):
+            return f"{result['policy']}\n可以继续回复当前页的订单号或序号。", lookup
+        return result.get("answer") or _tool_failure_answer(result) or "暂时无法查询取消政策。", lookup
+    if choice == "看更多" and lookup["has_more"]:
+        next_page = _automatic_tool(
+            call_tool, "find_orders_by_amount", {
+                "paid_amount_cents": lookup["paid_amount_cents"], "offset": lookup["next_offset"],
+                "purpose": "cancel_order", "reason": lookup["cancel_reason"],
+            }, budget, trace_id,
+        )
+        if next_page.get("ok") and next_page["orders"]:
+            return _order_lookup_answer(next_page), next_page
+        if next_page.get("ok"):
+            return "没有更多候选。\n" + _order_lookup_answer(lookup), lookup
+        answer = next_page.get("answer") or _tool_failure_answer(next_page) or "暂时无法查看下一页。"
+        return answer, lookup
+    return _order_lookup_answer(lookup), lookup
+
+
 def _execute(
     user_message: str,
     user_id: str,
@@ -249,9 +468,11 @@ def _execute(
     now: datetime | None,
     trace_id: str,
     budget: ExecutionBudget,
+    state: ConversationState,
     stream: bool,
 ) -> Generator[dict, None, str]:
     """唯一的执行内核；``stream`` 只决定输出通道，不改变任何执行规则。"""
+    user_index = len(messages)
     messages.append({"role": "user", "content": user_message})
 
     current_time = now if now is not None else datetime.now(UTC)
@@ -264,15 +485,38 @@ def _execute(
         active = load_active_confirmation(
             user_id=user_id, session_id=session_id, thread_id=thread_id, now=current_time,
         )
+    state.discard_finished_clarification(active)
 
     if active is not None:
-        answer = _handle_pending_confirmation(
-            active,
-            user_message,
-            client,
-            now=now,
-            trace_id=trace_id,
+        state.cancel_selection = None
+        if (
+            active["tool"] == "cancel_order" and state.last_queried_order_id
+            and state.last_queried_order_id != active["order_id"]
+            and confirmation_command(user_message, tool="cancel_order") == "approve"
+        ):
+            answer = f"请点击订单 {active['order_id']} 的确认卡执行取消。"
+        else:
+            answer = _handle_pending_confirmation(active, user_message, client, now=now, trace_id=trace_id)
+        if answer is None and active["tool"] == "cancel_order" and active["status"] == "pending":
+            answer = _pending_cancel_eligibility(user_message, active, state, now=current_time)
+        if answer is not None:
+            yield from _emit_answer(messages, answer, stream=stream)
+            return answer
+
+    pending_question = active is not None
+    call_tool = partial(
+        execute_tool, user_id=user_id, session_id=session_id, thread_id=thread_id,
+        now=current_time, trace_id=trace_id, pending_question=pending_question,
+    )
+    if state.cancel_selection is not None:
+        answer, state.cancel_selection = _continue_cancel_selection(
+            user_message, state.cancel_selection, call_tool, budget, trace_id,
         )
+        yield from _emit_answer(messages, answer, stream=stream)
+        return answer
+
+    if not pending_question and has_context and confirmation_command(user_message) is not None:
+        answer = "当前没有有效的待确认操作。请重新发起需要处理的操作。"
         yield from _emit_answer(messages, answer, stream=stream)
         return answer
 
@@ -288,6 +532,21 @@ def _execute(
         yield from _emit_answer(messages, SCOPE_REFUSAL, stream=stream)
         return SCOPE_REFUSAL
 
+    amount_cents = None if pending_question else cancel_amount_cents(user_message)
+    if amount_cents is not None:
+        lookup = _automatic_tool(
+            call_tool, "find_orders_by_amount",
+            {"paid_amount_cents": amount_cents, "purpose": "cancel_order"}, budget, trace_id,
+        )
+        answer, state.cancel_selection = _cancel_lookup_reply(lookup, call_tool, budget, trace_id)
+        yield from _emit_answer(messages, answer, stream=stream)
+        return answer
+
+    logistics_order_id = None
+    looked_up_order = False
+    cancel_needs_lookup = not pending_question and requires_cancel_lookup(user_message)
+    exposed_tools = PENDING_QUESTION_TOOL_SCHEMAS if pending_question else TOOLS
+    buffer_tool_turns = pending_question or cancel_needs_lookup
     for step in range(max_steps):
         if budget.expired():
             answer = TIME_BUDGET_ANSWER
@@ -307,7 +566,11 @@ def _execute(
         message = None
         streamed_parts: list[str] = []
         try:
-            window, context_stats = trim_messages(messages)
+            model_messages = (
+                _pending_question_messages(messages, user_index, active, state.last_queried_order_id)
+                if active is not None else messages
+            )
+            window, context_stats = trim_messages(model_messages)
             if context_stats["dropped"] or context_stats["truncated"]:
                 emit_trace(
                     "context.trimmed",
@@ -316,14 +579,15 @@ def _execute(
                     **context_stats,
                 )
             if stream:
-                for kind, value in stream_model(client, window, TOOLS):
+                for kind, value in stream_model(client, window, exposed_tools):
                     if kind == "token":
                         streamed_parts.append(value)
-                        yield _token_event(value)
+                        if not buffer_tool_turns:
+                            yield _token_event(value)
                     elif kind == "message":
                         message = value
             else:
-                message = request_model(client, window, TOOLS)
+                message = request_model(client, window, exposed_tools)
         except GeneratorExit:
             model_status = "cancelled"
             raise
@@ -344,11 +608,19 @@ def _execute(
         if stream and message is None:
             raise RuntimeError("流式模型没有返回完整消息")
 
-        # 兼容只返回完整消息、没有增量文本的模型替身。
-        if stream and message.content and not streamed_parts:
-            yield _token_event(message.content)
+        # 等待确认或按金额取消时，仅显示没有工具调用的模型回复。
+        if stream and (not buffer_tool_turns or not message.tool_calls):
+            if buffer_tool_turns:
+                for part in streamed_parts:
+                    yield _token_event(part)
+            # 兼容只返回完整消息、没有增量文本的模型替身。
+            if message.content and not streamed_parts:
+                yield _token_event(message.content)
 
-        messages.append(message.model_dump(exclude_none=True))
+        assistant_message = message.model_dump(exclude_none=True)
+        if pending_question and message.tool_calls:
+            assistant_message.pop("content", None)
+        messages.append(assistant_message)
 
         if not message.tool_calls:
             answer = message.content or "模型没有返回文本。"
@@ -357,28 +629,50 @@ def _execute(
             return answer
 
         awaiting = None
+        order_lookup_answer = None
+        cancel_lookup = None
         tool_results = []
         exhausted = False
+        looking_up_order = not pending_question and any(
+            call.function.name == "find_orders_by_amount" for call in message.tool_calls
+        )
+        looked_up_order = looked_up_order or looking_up_order
         for tool_call in message.tool_calls:
             if awaiting is not None:
                 # 给每个 tool_call 补齐结果，但不继续执行同一批的后续动作。
                 result = {"ok": False, "error": "AWAITING_CONFIRMATION"}
+            elif order_lookup_answer is not None or cancel_lookup is not None:
+                result = {"ok": False, "error": "ORDER_SELECTION_REQUIRED"}
+            elif (
+                (looking_up_order and tool_call.function.name == "get_logistics")
+                or ((cancel_needs_lookup or looked_up_order) and tool_call.function.name == "cancel_order")
+            ):
+                result = {"ok": False, "error": "ORDER_LOOKUP_REQUIRED"}
             elif not budget.has_tool_quota():
                 # 超预算也要补齐结果，否则消息序列不合法，下一轮直接 400。
                 result = {"ok": False, "error": "BUDGET_EXCEEDED"}
                 exhausted = True
             else:
                 budget.consume_tool()
-                result = execute_tool(
-                    tool_call,
-                    user_id,
-                    session_id=session_id,
-                    thread_id=thread_id,
-                    now=current_time,
-                    trace_id=trace_id,
-                )
+                result = call_tool(tool_call, logistics_order_id=logistics_order_id)
+                if result.get("ok"):
+                    name = tool_call.function.name
+                    if name == "get_order" and (order_id := result.get("order", {}).get("order_id")):
+                        state.last_queried_order_id = order_id
+                    elif name in {"get_logistics", "get_refund_status", "check_refund_eligibility"} and (
+                        order_id := result.get("order_id")
+                    ):
+                        state.last_queried_order_id = order_id
                 if result.get("status") == "awaiting_confirmation":
                     awaiting = result
+                if tool_call.function.name == "find_orders_by_amount" and result.get("ok"):
+                    orders = result["orders"]
+                    if "cancel_reason" in result:
+                        cancel_lookup = result
+                    elif result["offset"] == 0 and len(orders) == 1 and not result["has_more"]:
+                        logistics_order_id = orders[0]["order_id"]
+                    else:
+                        order_lookup_answer = _order_lookup_answer(result)
             tool_results.append(result)
             messages.append(
                 {
@@ -393,6 +687,15 @@ def _execute(
             yield from _emit_answer(messages, answer, stream=stream)
             return answer
 
+        if cancel_lookup is not None:
+            answer, state.cancel_selection = _cancel_lookup_reply(cancel_lookup, call_tool, budget, trace_id)
+            yield from _emit_answer(messages, answer, stream=stream)
+            return answer
+
+        if order_lookup_answer is not None:
+            yield from _emit_answer(messages, order_lookup_answer, stream=stream)
+            return order_lookup_answer
+
         if exhausted:
             answer = TOOL_BUDGET_ANSWER
             emit_trace(
@@ -402,6 +705,11 @@ def _execute(
                 kind="tool_calls",
                 **budget.snapshot(),
             )
+            yield from _emit_answer(messages, answer, stream=stream)
+            return answer
+
+        if pending_question and all(result.get("error") == PENDING_TOOL_NOT_ALLOWED for result in tool_results):
+            answer = "你可以继续查询订单或政策。要发起新的操作，请先确认或放弃当前操作。"
             yield from _emit_answer(messages, answer, stream=stream)
             return answer
 
@@ -427,6 +735,7 @@ def run_agent(
     now: datetime | None = None,
     trace_id: str | None = None,
     budget: ExecutionBudget | None = None,
+    state: ConversationState | None = None,
 ) -> str:
     """非流式入口：驱动同一个内核，取回最终回复。"""
     if max_steps < 1:
@@ -442,6 +751,7 @@ def run_agent(
         now=now,
         trace_id=trace_id or new_run_id(),
         budget=budget or ExecutionBudget(),
+        state=state if state is not None else ConversationState(),
         stream=False,
     )
     try:
@@ -467,6 +777,7 @@ def stream_agent(
     now: datetime | None = None,
     trace_id: str | None = None,
     budget: ExecutionBudget | None = None,
+    state: ConversationState | None = None,
 ):
     """流式入口：把同一个内核产出的 token 事件实时透传。"""
     if max_steps < 1:
@@ -482,5 +793,6 @@ def stream_agent(
         now=now,
         trace_id=trace_id or new_run_id(),
         budget=budget or ExecutionBudget(),
+        state=state if state is not None else ConversationState(),
         stream=True,
     )

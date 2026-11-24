@@ -93,6 +93,39 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "find_orders_by_amount",
+            "description": (
+                "用户给了实付金额但没给订单号时，按金额精确查找本人订单。"
+                "只有用户明确要求取消时才传purpose=cancel_order，由运行时处理候选及确认。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paid_amount_cents": {
+                        "type": "integer", "minimum": 0, "maximum": 9223372036854775807,
+                        "description": "实付金额，单位为分，例如129元传12900。",
+                    },
+                    "offset": {
+                        "type": "integer", "minimum": 0, "maximum": 9223372036854775807,
+                        "description": "首次查询省略；查看相同金额的更多候选时使用next_offset。",
+                    },
+                    "purpose": {
+                        "type": "string", "enum": ["cancel_order"],
+                        "description": "明确要求按金额取消时使用；查询物流时省略。",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "仅按金额取消且用户已说明原因时填写，不能编造。",
+                    },
+                },
+                "required": ["paid_amount_cents"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_logistics",
             "description": (
                 "查询当前用户指定订单的本地模拟物流，包括承运商、运单号和按时间排序的轨迹。"
@@ -134,7 +167,7 @@ TOOLS = [
         "function": {
             "name": "get_policy",
             "description": (
-                "查询通用的取消或退款政策。"
+                "查询通用的取消、退款申请或撤回退款政策。"
                 "不能用于判断某笔具体订单是否符合条件。"
             ),
             "parameters": {
@@ -142,10 +175,10 @@ TOOLS = [
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "enum": ["cancellation", "refund"],
+                        "enum": ["cancellation", "refund", "withdraw"],
                         "description": (
                             "cancellation 表示取消政策，"
-                            "refund 表示退款政策。"
+                            "refund 表示退款政策，withdraw 表示撤回退款政策。"
                         ),
                     }
                 },
@@ -285,6 +318,10 @@ def list_refunds(
         limit=limit,
         offset=offset,
     )
+
+
+def find_orders_by_amount(user_id: str, *, paid_amount_cents: int, offset: int = 0) -> dict:
+    return service.find_orders_by_amount(user_id=user_id, paid_amount_cents=paid_amount_cents, offset=offset)
 
 
 def get_logistics(user_id: str, order_id: str) -> dict:

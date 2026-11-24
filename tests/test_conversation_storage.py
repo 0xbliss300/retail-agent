@@ -1,5 +1,7 @@
 """完整轮次快照的持久化、迁移和用户隔离。"""
 
+import json
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
@@ -53,6 +55,49 @@ def test_initialization_creates_conversation_table(conversation_db):
         ).fetchone() is not None
     finally:
         conn.close()
+
+
+def test_migration_recovers_legacy_selection_and_saves_it_with_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "legacy.db")
+    selection = {"orders": [{"order_id": "ORD-891"}, {"order_id": "ORD-892"}]}
+    messages = history()
+    messages[-1]["cancel_selection"] = selection
+    now = datetime(2026, 10, 31, 2, tzinfo=timezone.utc)
+    with closing(database.get_connection()) as conn, conn:
+        conn.execute("""
+            CREATE TABLE chat_threads (
+                user_id TEXT, session_id TEXT, thread_id TEXT,
+                title TEXT, messages_json TEXT, version INTEGER,
+                created_at TEXT, updated_at TEXT,
+                PRIMARY KEY (user_id, session_id, thread_id)
+            )
+        """)
+        conn.execute(
+            "INSERT INTO chat_threads VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            (*CONTEXT.values(), "选择订单", json.dumps(messages), now.isoformat(), now.isoformat()),
+        )
+
+    database.init_db()
+    database.init_db()
+    snapshot = persistence.load_conversation(**CONTEXT)
+    assert snapshot["messages"] == messages
+    assert snapshot["cancel_selection"] == selection
+    assert snapshot["last_queried_order_id"] is None
+    assert snapshot["pending_clarification"] is None
+    messages += [
+        {"role": "user", "content": "先告诉我取消政策"},
+        {"role": "assistant", "content": "这里是取消政策。"},
+    ]
+    version = persistence.save_conversation(
+        **CONTEXT, messages=messages, now=now, expected_version=snapshot["version"],
+        cancel_selection=selection,
+    )
+    with pytest.raises(persistence.ConversationConflict):
+        persistence.save_conversation(**CONTEXT, messages=messages, now=now, expected_version=1)
+    snapshot = persistence.load_conversation(**CONTEXT)
+    assert snapshot["version"] == version == 2
+    assert snapshot["messages"] == messages
+    assert snapshot["cancel_selection"] == selection
 
 
 def test_snapshot_survives_closed_connection_with_tool_messages(conversation_db):

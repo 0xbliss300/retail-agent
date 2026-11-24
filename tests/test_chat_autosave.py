@@ -228,20 +228,15 @@ def test_pending_resume_loads_existing_history_with_current_system_prompt(chat_d
         {"role": "assistant", "content": pending["summary"]},
     ]
     persistence.save_conversation(**context, messages=original, now=now, expected_version=0)
-    response = ChatCompletionMessage(
-        role="assistant", content=None,
-        tool_calls=[{
-            "id": "call_wait", "type": "function",
-            "function": {
-                "name": "report_confirmation_intent",
-                "arguments": json.dumps({"intent": "other", "evidence": "先等等"}),
-            },
-        }],
-    )
-    monkeypatch.setattr(
-        "app.agent.confirmation_intent.request_model", lambda client, messages, tools: response,
-    )
-    install_inputs(monkeypatch, ["1", "先等等", "exit"])
+
+    def answer_question(client, messages, tools):
+        assert messages[0]["content"].startswith(demo_chat.SYSTEM_PROMPT)
+        assert json.loads(messages[-1]["content"])["pending_action"]["order_id"] == "ORD-HISTORY-PENDING"
+        return ChatCompletionMessage(role="assistant", content="提交退款申请后需要等待处理。")
+
+    monkeypatch.setattr("app.harness.runtime.request_model", answer_question)
+    question = "提交后会马上到账吗？"
+    install_inputs(monkeypatch, ["1", question, "exit"])
 
     demo_chat.main([])
 
@@ -249,4 +244,4 @@ def test_pending_resume_loads_existing_history_with_current_system_prompt(chat_d
     assert loaded["version"] == 2
     assert loaded["messages"][1:3] == original[1:]
     assert loaded["messages"][0]["content"] == demo_chat.SYSTEM_PROMPT
-    assert loaded["messages"][-2] == {"role": "user", "content": "先等等"}
+    assert loaded["messages"][-2] == {"role": "user", "content": question}

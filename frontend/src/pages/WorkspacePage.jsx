@@ -22,6 +22,7 @@ import {
 } from "../storage.js";
 
 const SUGGESTIONS = ["查询我的订单", "查看 ORD-2002 的物流", "申请 ORD-2002 退款"];
+const ACTION_TIMEOUT_MS = 10000;
 
 function newId() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
@@ -61,6 +62,35 @@ function flowSteps(tool) {
   ];
 }
 
+function CancellationResultCard({ result }) {
+  return (
+    <div className="confirm-card" role="status">
+      <div className="confirm-card__head">
+        <span className="confirm-card__title">订单取消结果</span>
+        <StatusPill tone="blue">已取消</StatusPill>
+      </div>
+      <div className="confirm-card__rows">
+        <div className="kv">
+          <span className="kv__label">订单编号</span>
+          <span className="kv__value">{result.order_id}</span>
+        </div>
+        {result.refund ? (
+          <>
+            <div className="kv">
+              <span className="kv__label">模拟退款流水</span>
+              <span className="kv__value">{result.refund.refund_id}</span>
+            </div>
+            <div className="kv">
+              <span className="kv__label">模拟退款金额</span>
+              <span className="kv__value">{formatAmount(result.refund.amount_cents)}</span>
+            </div>
+          </>
+        ) : <p>未付款订单无需退款。</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function WorkspacePage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -74,29 +104,32 @@ export default function WorkspacePage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [deciding, setDeciding] = useState(false);
+  const [recovery, setRecovery] = useState(null);
   const [banner, setBanner] = useState("");
 
   const scrollRef = useRef(null);
   const bootRef = useRef(false);
-  const activeIdRef = useRef(conversationId);
-  activeIdRef.current = conversationId;
+  const viewRef = useRef({ id: conversationId });
 
-  const persist = useCallback((nextMessages, nextSession) => {
+  const persist = useCallback((nextMessages, nextSession, cancelRequest) => {
     const texts = nextMessages.filter((message) => message.text);
-    if (texts.length === 0) return;
-    if (nextMessages.some((message) => message.streaming)) return;
+    if (texts.length === 0 || nextMessages.some((message) => message.streaming)) return false;
+    const id = viewRef.current.id;
+    const list = loadConversations();
+    const savedRequest = list.find((item) => item.id === id)?.cancelRequest;
     const firstUser = texts.find((message) => message.role === "user");
     const record = {
-      id: activeIdRef.current,
+      id,
       title: titleFromMessage(firstUser?.text),
       sessionId: nextSession?.sessionId ?? null,
       threadId: nextSession?.threadId ?? null,
       messages: texts.slice(-40),
+      cancelRequest: cancelRequest === undefined ? savedRequest : cancelRequest,
       updatedAt: Date.now(),
     };
-    const list = loadConversations().filter((item) => item.id !== record.id);
-    saveConversations([record, ...list]);
-    saveActiveConversationId(record.id);
+    const saved = saveConversations([record, ...list.filter((item) => item.id !== id)]);
+    if (saved) saveActiveConversationId(id);
+    return saved;
   }, []);
 
   useEffect(() => {
@@ -107,33 +140,57 @@ export default function WorkspacePage() {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, pending]);
+  }, [messages, pending, recovery]);
 
-  const startNew = useCallback(() => {
-    const id = createConversationId();
+  const openView = useCallback((id) => {
+    const view = { id };
+    viewRef.current = view;
     setConversationId(id);
-    setMessages([]);
-    setSession(null);
     setPending(null);
     setOrder(null);
     setInput("");
     setBanner("");
+    setSending(false);
+    setDeciding(false);
+    setRecovery(null);
     saveActiveConversationId(id);
+    return view;
   }, []);
 
-  const restore = useCallback(async (record) => {
-    setConversationId(record.id);
-    setMessages(record.messages ?? []);
-    setSession(record.sessionId ? { sessionId: record.sessionId, threadId: record.threadId } : null);
+  const startNew = useCallback(() => {
+    openView(createConversationId());
+    setMessages([]);
+    setSession(null);
+  }, [openView]);
+
+  const settleCancellation = useCallback((record, { result, text }) => {
+    const id = `cancel:${record.cancelRequest.confirmation_id}`;
+    const nextMessages = [
+      ...record.messages.filter((message) => message.id !== id),
+      { id, role: "assistant", text: text ?? `订单 ${result.order_id} 已取消。`, cancellationResult: result },
+    ];
+    persist(nextMessages, { sessionId: record.sessionId, threadId: record.threadId }, null);
+    setMessages(nextMessages);
     setPending(null);
-    saveActiveConversationId(record.id);
-    if (!record.sessionId) return;
+    setRecovery(null);
+  }, [persist]);
+
+  const recover = useCallback(async (record, view) => {
+    const request = record.cancelRequest;
+    if (request) {
+      setPending(null);
+      setRecovery({ request, checking: true });
+    }
     try {
-      const result = await post("/recover", {
+      const result = await post("/recover", request ?? {
         session_id: record.sessionId,
         thread_id: record.threadId,
-      });
-      if (result.state === "awaiting_confirmation" && result.confirmation_id) {
+      }, { signal: AbortSignal.timeout(ACTION_TIMEOUT_MS) });
+      if (viewRef.current !== view || (!request && view.startedChat)) return;
+
+      if (request && result.state === "executed" && result.result?.status === "canceled") {
+        settleCancellation(record, { result: result.result });
+      } else if (result.state === "awaiting_confirmation" && result.confirmation_id) {
         setPending({
           confirmation_id: result.confirmation_id,
           tool: result.tool,
@@ -141,10 +198,29 @@ export default function WorkspacePage() {
           summary: result.summary,
           expires_at: result.expires_at,
         });
+        setRecovery(null);
+      } else if (request && result.last_state === "expired") {
+        settleCancellation(record, { text: "本次取消确认已过期，请重新发起取消申请。" });
+      } else if (request && result.last_state === "rejected") {
+        settleCancellation(record, { text: "本次取消申请已拒绝。" });
+      } else if (request) {
+        setRecovery({ request, checking: false });
       }
     } catch {
-      // 会话已过期时保持静默，下次发送会重新开始。
+      if (request && viewRef.current === view) setRecovery({ request, checking: false });
     }
+  }, [settleCancellation]);
+
+  const restore = useCallback((record) => {
+    const view = openView(record.id);
+    setMessages(record.messages ?? []);
+    setSession(record.sessionId ? { sessionId: record.sessionId, threadId: record.threadId } : null);
+    if (record.sessionId || record.cancelRequest) recover(record, view);
+  }, [openView, recover]);
+
+  useEffect(() => () => {
+    viewRef.current = { id: viewRef.current.id };
+    bootRef.current = false;
   }, []);
 
   useEffect(() => {
@@ -170,7 +246,7 @@ export default function WorkspacePage() {
   // 侧栏切换对话时不会重新挂载组件，这里跟随查询参数切换。
   useEffect(() => {
     const targetId = searchParams.get("c");
-    if (!targetId || targetId === activeIdRef.current) return;
+    if (!targetId || targetId === viewRef.current.id) return;
     const found = loadConversations().find((item) => item.id === targetId);
     if (found) restore(found);
   }, [restore, searchParams]);
@@ -193,6 +269,7 @@ export default function WorkspacePage() {
     () => pending?.order_id || lastOrderId(messages.filter((message) => !message.streaming)),
     [messages, pending],
   );
+  const latestCancellationId = messages.findLast((message) => message.cancellationResult)?.id;
 
   useEffect(() => {
     if (!orderId) {
@@ -206,13 +283,16 @@ export default function WorkspacePage() {
     return () => {
       alive = false;
     };
-  }, [orderId]);
+  }, [conversationId, orderId, latestCancellationId]);
 
   const appendMessage = (message) => setMessages((current) => [...current, message]);
 
   const send = async (raw) => {
     const text = raw.trim();
-    if (!text || sending) return;
+    const view = viewRef.current;
+    if (!text || recovery || view.sending || view.deciding) return;
+    view.sending = true;
+    view.startedChat = true;
 
     const assistantId = newId();
     appendMessage({ id: newId(), role: "user", text });
@@ -229,7 +309,7 @@ export default function WorkspacePage() {
           message: text,
           sessionId: currentSession?.sessionId,
           threadId: currentSession?.threadId,
-          onToken: (token) =>
+          onToken: (token) => viewRef.current === view &&
             setMessages((current) =>
               current.map((message) =>
                 message.id === assistantId ? { ...message, text: message.text + token } : message,
@@ -237,13 +317,14 @@ export default function WorkspacePage() {
             ),
         });
       } catch (error) {
+        if (viewRef.current !== view) return;
         if (error.code === "CONVERSATION_NOT_FOUND" && currentSession) {
           setBanner("上一段对话已过期，已为你开始新的对话。");
           currentSession = null;
           setSession(null);
           done = await streamChat({
             message: text,
-            onToken: (token) =>
+            onToken: (token) => viewRef.current === view &&
               setMessages((current) =>
                 current.map((message) =>
                   message.id === assistantId ? { ...message, text: message.text + token } : message,
@@ -255,6 +336,7 @@ export default function WorkspacePage() {
         }
       }
 
+      if (viewRef.current !== view) return;
       setSession({ sessionId: done.session_id, threadId: done.thread_id });
       setPending(done.pending_action ?? null);
       setMessages((current) =>
@@ -266,6 +348,7 @@ export default function WorkspacePage() {
       );
       if (done.warning) setBanner(done.warning);
     } catch (error) {
+      if (viewRef.current !== view) return;
       setMessages((current) =>
         current.map((message) =>
           message.id === assistantId
@@ -279,34 +362,64 @@ export default function WorkspacePage() {
         ),
       );
     } finally {
-      setSending(false);
+      view.sending = false;
+      if (viewRef.current === view) setSending(false);
     }
   };
 
   const decide = async (decision) => {
-    if (!session || !pending || deciding) return;
+    const view = viewRef.current;
+    if (!session || !pending || recovery || view.sending || view.deciding) return;
+    const request = {
+      session_id: session.sessionId,
+      thread_id: session.threadId,
+      confirmation_id: pending.confirmation_id,
+    };
+    const isCancelApproval = pending.tool === "cancel_order" && decision === "approve";
+    if (isCancelApproval && !persist(messages, session, request)) {
+      setBanner("无法保存本次操作编号，请允许浏览器保存会话后重试。");
+      return;
+    }
+    const savedRequest = loadConversations().find((item) => item.id === view.id)?.cancelRequest;
+    const trackedRequest = isCancelApproval || savedRequest?.confirmation_id === request.confirmation_id
+      ? request : null;
+    const record = { messages, ...session, cancelRequest: trackedRequest };
+
+    view.deciding = true;
     setDeciding(true);
     setBanner("");
     try {
-      const result = await post("/confirm", {
-        session_id: session.sessionId,
-        thread_id: session.threadId,
-        confirmation_id: pending.confirmation_id,
-        decision,
+      const result = await post("/confirm", { ...request, decision }, {
+        signal: trackedRequest ? AbortSignal.timeout(ACTION_TIMEOUT_MS) : undefined,
       });
+      if (viewRef.current !== view) return;
       setSession({ sessionId: result.session_id, threadId: result.thread_id });
-      setPending(result.pending_action ?? null);
-      appendMessage({ id: newId(), role: "assistant", text: result.reply });
       if (result.warning) setBanner(result.warning);
+      if (trackedRequest && result.cancellation_result?.status === "canceled") {
+        settleCancellation(record, { result: result.cancellation_result });
+      } else if (trackedRequest && result.pending_action?.confirmation_id !== request.confirmation_id) {
+        await recover(record, view);
+      } else {
+        setPending(result.pending_action ?? null);
+        appendMessage({ id: newId(), role: "assistant", text: result.reply });
+      }
     } catch (error) {
-      setBanner(error.message || "确认失败，请稍后重试。");
+      if (viewRef.current !== view) return;
+      if (trackedRequest) {
+        setPending(null);
+        setRecovery({ request: trackedRequest, checking: false });
+      } else {
+        setBanner(error.message || "确认失败，请稍后重试。");
+      }
     } finally {
-      setDeciding(false);
+      view.deciding = false;
+      if (viewRef.current === view) setDeciding(false);
     }
   };
 
   const labels = decisionLabels(pending?.tool);
   const steps = flowSteps(pending?.tool);
+  const composerDisabled = sending || deciding || Boolean(recovery);
 
   return (
     <AppShell>
@@ -354,6 +467,8 @@ export default function WorkspacePage() {
                       <Icon name="user" size={16} />
                     </span>
                   </div>
+                ) : message.cancellationResult ? (
+                  <CancellationResultCard key={message.id} result={message.cancellationResult} />
                 ) : (
                   <div className="msg-row" key={message.id}>
                     <span className="msg-avatar">
@@ -392,12 +507,12 @@ export default function WorkspacePage() {
                     <span className="kv__value">{pending.summary}</span>
                   </div>
                 </div>
-                <p className="confirm-card__note">确认后才会提交到服务端，并重新校验订单状态与金额。</p>
+                <p className="confirm-card__note">你可以先提问，再确认或放弃这项操作。</p>
                 <div className="confirm-card__actions">
                   <button
                     className="btn btn--outline btn--sm"
                     type="button"
-                    disabled={deciding}
+                    disabled={deciding || sending}
                     onClick={() => decide("reject")}
                   >
                     {labels.reject}
@@ -405,7 +520,7 @@ export default function WorkspacePage() {
                   <button
                     className="btn btn--primary btn--sm"
                     type="button"
-                    disabled={deciding}
+                    disabled={deciding || sending}
                     onClick={() => decide("approve")}
                   >
                     {deciding ? "处理中…" : labels.approve}
@@ -414,6 +529,25 @@ export default function WorkspacePage() {
                 <div className="confirm-card__foot">
                   有效期至 {formatClock(pending.expires_at)}，过期后需要重新发起。
                 </div>
+              </div>
+            ) : null}
+
+            {recovery ? (
+              <div className="confirm-card">
+                <div className="confirm-card__head" role="status">
+                  <span className="confirm-card__title">
+                    {recovery.checking ? "正在查询取消结果…" : "暂未查到结果"}
+                  </span>
+                </div>
+                {!recovery.checking ? (
+                  <div className="confirm-card__actions">
+                    <button className="btn btn--outline btn--sm" type="button" onClick={() =>
+                      recover({ messages, ...session, cancelRequest: recovery.request }, viewRef.current)
+                    }>
+                      重新查询
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -437,9 +571,9 @@ export default function WorkspacePage() {
                 value={input}
                 placeholder="输入你的问题，例如：我的退款进度如何？"
                 onChange={(event) => setInput(event.target.value)}
-                disabled={sending}
+                disabled={composerDisabled}
               />
-              <button className="composer__send" type="submit" disabled={sending || !input.trim()} aria-label="发送">
+              <button className="composer__send" type="submit" disabled={composerDisabled || !input.trim()} aria-label="发送">
                 {sending ? <span className="spinner" /> : <Icon name="send" size={18} />}
               </button>
             </form>

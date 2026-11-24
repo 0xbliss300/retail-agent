@@ -2,6 +2,8 @@
 
 import json
 import sqlite3
+from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -94,7 +96,16 @@ def business_result_ok(db_path: Path, case: CaseView) -> bool:
         conn.close()
 
 
-def evaluate(db_path: Path, case: CaseView) -> dict:
+def check_refunds_before_approval(db_path: Path, user_id: str) -> dict:
+    """在批准前统计该用户的退款流水，包括候选订单上的流水。"""
+    with closing(sqlite3.connect(db_path)) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM refund_requests WHERE user_id = ?", (user_id,)).fetchone()[0]
+    return check("before_approval.refund_count", count, 0)
+
+
+def evaluate(
+    db_path: Path, case: CaseView, *, unchanged_orders: Sequence[dict[str, Any]] = (),
+) -> dict:
     """直接读取数据库，不调用 Agent、业务 Service 或模型。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -263,6 +274,20 @@ def evaluate(db_path: Path, case: CaseView) -> dict:
                 expected["other_orders_canceled"],
             )
         )
+        for other_order in unchanged_orders:
+            order_id = other_order["order_id"]
+            row = conn.execute(
+                "SELECT status FROM orders WHERE order_id = ? AND user_id = ?",
+                (order_id, case.user_id),
+            ).fetchone()
+            checks.append(check(
+                f"other_orders.{order_id}.status", row["status"] if row is not None else None, other_order["status"],
+            ))
+        if unchanged_orders:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM refund_requests WHERE user_id = ?", (case.user_id,),
+            ).fetchone()[0]
+            checks.append(check("refund.total_count", count, expected["refund_count"]))
 
         return {
             "passed": all(check["ok"] for check in checks),

@@ -79,7 +79,7 @@ export function lastOrderId(messages) {
   const pattern = /ORD-\d+/g;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const found = messages[index].text?.match(pattern);
-    if (found) return found[found.length - 1];
+    if (found) return new Set(found).size === 1 ? found[0] : null;
   }
   return null;
 }

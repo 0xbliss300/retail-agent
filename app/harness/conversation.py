@@ -16,6 +16,7 @@ from app.business.service import (
 )
 from app.harness.confirmation import load_active_confirmation, reject_confirmation
 from app.harness.runtime import (
+    ConversationState,
     create_messages,
     format_confirmation_result,
     run_agent,
@@ -49,6 +50,9 @@ def _save_context(context: dict, current: datetime) -> tuple[bool, str | None]:
             session_id=context["session_id"],
             thread_id=context["thread_id"],
             messages=context["messages"],
+            cancel_selection=context["state"].cancel_selection,
+            last_queried_order_id=context["state"].last_queried_order_id,
+            pending_clarification=context["state"].pending_clarification,
             now=current,
             expected_version=context["version"],
         )
@@ -68,6 +72,7 @@ def new_conversation(*, user_id: str) -> dict:
         "session_id": f"sess_{uuid4().hex}",
         "thread_id": f"thread_{uuid4().hex}",
         "messages": create_messages(SYSTEM_PROMPT),
+        "state": ConversationState(),
         "version": 0,
         "resumed": False,
         "active": None,
@@ -113,14 +118,22 @@ def open_conversation(
 
     # 恢复历史时保留工具调用与工具结果，只替换系统提示词。
     messages = create_messages(SYSTEM_PROMPT)
+    state = ConversationState()
     if snapshot is not None:
         messages.extend(snapshot["messages"][1:])
+        state = ConversationState(
+            cancel_selection=snapshot["cancel_selection"],
+            last_queried_order_id=snapshot["last_queried_order_id"],
+            pending_clarification=snapshot["pending_clarification"],
+        )
+        state.discard_finished_clarification(active)
 
     return {
         "user_id": user_id,
         "session_id": session_id,
         "thread_id": thread_id,
         "messages": messages,
+        "state": state,
         "version": snapshot["version"] if snapshot is not None else 0,
         "resumed": snapshot is not None,
         "active": active,
@@ -176,19 +189,20 @@ def send_message(
             client,
             session_id=context["session_id"],
             thread_id=context["thread_id"],
-            now=current,
+            now=now,
             trace_id=run_id,
+            state=context["state"],
         )
-
-        history_saved, warning = _save_context(context, current)
 
         active = load_active_confirmation(
             user_id=context["user_id"],
             session_id=context["session_id"],
             thread_id=context["thread_id"],
-            now=current,
+            now=_current_time(now),
         )
         context["active"] = active
+        context["state"].discard_finished_clarification(active)
+        history_saved, warning = _save_context(context, current)
 
         return {
             "reply": answer,
@@ -250,8 +264,9 @@ def stream_message(
                 client,
                 session_id=context["session_id"],
                 thread_id=context["thread_id"],
-                now=current,
+                now=now,
                 trace_id=run_id,
+                state=context["state"],
             ):
                 if event.get("event") == "token":
                     reply_parts.append(event["data"]["text"])
@@ -267,15 +282,15 @@ def stream_message(
             }
             return
 
-        history_saved, warning = _save_context(context, current)
-
         active = load_active_confirmation(
             user_id=context["user_id"],
             session_id=context["session_id"],
             thread_id=context["thread_id"],
-            now=current,
+            now=_current_time(now),
         )
         context["active"] = active
+        context["state"].discard_finished_clarification(active)
+        history_saved, warning = _save_context(context, current)
 
         yield {
             "event": "done",
@@ -370,9 +385,18 @@ def decide_confirmation(
         result=result,
     )
 
+    active = load_active_confirmation(
+        user_id=context["user_id"],
+        session_id=context["session_id"],
+        thread_id=context["thread_id"],
+        now=current,
+    )
+    context["active"] = active
     history_saved = True
     warning = None
     if was_pending:
+        context["state"].cancel_selection = None
+        context["state"].discard_finished_clarification(active)
         context["messages"].append(
             {
                 "role": "user",
@@ -382,13 +406,9 @@ def decide_confirmation(
         context["messages"].append({"role": "assistant", "content": reply})
         history_saved, warning = _save_context(context, current)
 
-    active = load_active_confirmation(
-        user_id=context["user_id"],
-        session_id=context["session_id"],
-        thread_id=context["thread_id"],
-        now=current,
+    cancellation_result = (
+        result if record["tool"] == "cancel_order" and result.get("status") == "canceled" else None
     )
-    context["active"] = active
 
     return {
         "reply": reply,
@@ -397,4 +417,5 @@ def decide_confirmation(
         "pending_action": pending_action(active),
         "history_saved": history_saved,
         "warning": warning,
+        "cancellation_result": cancellation_result,
     }

@@ -33,19 +33,25 @@ def get_order_for_user(
             conn.close()
 
 
-def get_orders_for_user(*, user_id: str, limit: int, offset: int) -> list[dict]:
+def get_orders_for_user(
+    *, user_id: str, limit: int, offset: int, paid_amount_cents: int | None = None,
+    status: str | None = None,
+) -> list[dict]:
     """先按可信用户过滤，再按订单号稳定排序分页；不返回内部身份字段。"""
+    amount_filter = "" if paid_amount_cents is None else "AND paid_amount_cents = ?"
+    status_filter = "" if status is None else "AND status = ?"
+    parameters = (user_id, *(value for value in (paid_amount_cents, status) if value is not None))
     conn = get_connection()
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT order_id, status, paid_amount_cents, paid_at, shipped_at, delivered_at
             FROM orders
-            WHERE user_id = ?
+            WHERE user_id = ? {amount_filter} {status_filter}
             ORDER BY order_id ASC
             LIMIT ? OFFSET ?
             """,
-            (user_id, limit, offset),
+            (*parameters, limit, offset),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -437,6 +443,35 @@ def get_refund_for_settlement(
         (refund_id,),
     ).fetchone()
     return dict(row) if row is not None else None
+
+
+def get_return_for_refund(conn: sqlite3.Connection, refund_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM return_requests WHERE refund_id = ?", (refund_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def find_returns_for_user(
+    conn: sqlite3.Connection, *, user_id: str, identifier: str | None, active_only: bool,
+) -> list[dict]:
+    """最多读取两笔，供服务区分唯一结果与需要用户选择。"""
+    rows = conn.execute(
+        """
+        SELECT t.return_id, t.tracking_number, t.accepted_at, r.refund_id, r.order_id,
+               r.status AS refund_status, r.amount_cents, s.settlement_id
+        FROM return_requests AS t
+        JOIN refund_requests AS r USING (refund_id)
+        LEFT JOIN refund_settlements AS s USING (refund_id)
+        WHERE r.user_id = ?
+          AND (? IS NULL OR t.return_id = ? OR r.order_id = ?)
+          AND (NOT ? OR r.status = 'pending')
+        ORDER BY r.created_at DESC, r.rowid DESC
+        LIMIT 2
+        """,
+        (user_id, identifier, identifier, identifier, active_only),
+    )
+    return [dict(row) for row in rows]
 
 
 def get_refund_settlement(

@@ -7,6 +7,8 @@
 
 from typing import Any
 
+from app.harness.order_selection import CANCEL_SELECTION
+
 # 一次模型调用最多带多少条消息（含系统提示）。
 MAX_CONTEXT_MESSAGES = 24
 # 单条工具结果的最大字符数；超出部分截断并标记。
@@ -23,6 +25,8 @@ def _truncate_tool_results(
     result: list[dict[str, Any]] = []
     truncated = 0
     for message in messages:
+        if CANCEL_SELECTION in message:
+            message = {key: value for key, value in message.items() if key != CANCEL_SELECTION}
         content = message.get("content")
         if (
             message.get("role") == "tool"

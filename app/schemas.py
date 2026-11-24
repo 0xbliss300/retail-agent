@@ -5,6 +5,19 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    email: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AccountResponse(BaseModel):
+    user_id: str
+    email: str
+    name: str
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -40,9 +53,12 @@ class ChatResponse(BaseModel):
     warning: str | None = None
 
 
+class ConfirmResponse(ChatResponse):
+    cancellation_result: dict | None = None
+
+
 class HealthResponse(BaseModel):
     status: str
-    demo_user_id: str
     version: str
 
 
@@ -51,6 +67,7 @@ class RecoverRequest(BaseModel):
 
     session_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
+    confirmation_id: str | None = Field(default=None, min_length=1)
 
 
 class RecoverResponse(BaseModel):

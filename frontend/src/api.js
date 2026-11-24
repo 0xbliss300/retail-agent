@@ -1,5 +1,29 @@
+import { setConversationAccount } from "./storage.js";
+
 // 开发时经 Vite 代理走 /api；构建后由 FastAPI 直接托管，接口在根路径。
 const BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? "/api" : "");
+let workspaceAccount = null;
+
+export function setWorkspaceAccount(userId) {
+  workspaceAccount = userId;
+  setConversationAccount(userId);
+}
+
+async function request(path, options = {}) {
+  const headers = new Headers(options.headers);
+  if (workspaceAccount && path !== "/auth/login" && path !== "/auth/me") {
+    headers.set("X-RetailOps-Account", workspaceAccount);
+  }
+  const response = await fetch(`${BASE}${path}`, { ...options, headers });
+  if (!response.ok) {
+    if (response.status === 401 && workspaceAccount && path !== "/auth/login") {
+      setWorkspaceAccount(null);
+      window.location.replace("/login");
+    }
+    throw await toError(response);
+  }
+  return response;
+}
 
 async function toError(response) {
   let detail = null;
@@ -16,18 +40,17 @@ async function toError(response) {
 }
 
 export async function get(path) {
-  const response = await fetch(`${BASE}${path}`);
-  if (!response.ok) throw await toError(response);
+  const response = await request(path);
   return response.json();
 }
 
-export async function post(path, body) {
-  const response = await fetch(`${BASE}${path}`, {
+export async function post(path, body, { signal } = {}) {
+  const response = await request(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
+    signal,
   });
-  if (!response.ok) throw await toError(response);
   return response.json();
 }
 
@@ -35,7 +58,7 @@ export async function post(path, body) {
  * 逐块读取 SSE，把 token 交给回调；返回 done 事件里的完整结果。
  */
 export async function streamChat({ message, sessionId, threadId, onToken }) {
-  const response = await fetch(`${BASE}/chat/stream`, {
+  const response = await request("/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -44,7 +67,6 @@ export async function streamChat({ message, sessionId, threadId, onToken }) {
       thread_id: threadId ?? null,
     }),
   });
-  if (!response.ok) throw await toError(response);
   if (!response.body) throw new Error("当前浏览器不支持流式响应。");
 
   const reader = response.body.getReader();

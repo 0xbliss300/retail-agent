@@ -1,8 +1,31 @@
 """加载本地开发使用的模拟订单、退款和物流，不代表真实业务数据。"""
 
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from secrets import token_bytes
 
+from app.storage.accounts import hash_password
 from app.storage.database import get_connection
+
+
+def seed_demo_accounts() -> None:
+    """给已有的两组模拟订单提供本地登录账号。"""
+    demos = (
+        ("USER-001", "demo@retailops.local", "小林", "demo1234"),
+        ("USER-002", "demo2@retailops.local", "小周", "demo5678"),
+    )
+    rows = []
+    for user_id, email, name, password in demos:
+        salt = token_bytes(16)
+        rows.append((user_id, email, name, salt, hash_password(password, salt)))
+    with closing(get_connection()) as conn, conn:
+        conn.executemany(
+            """
+            INSERT INTO accounts (user_id, email, name, password_salt, password_hash)
+            VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO NOTHING
+            """,
+            rows,
+        )
 
 
 def seed_orders() -> None:

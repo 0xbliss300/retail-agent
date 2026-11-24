@@ -764,7 +764,9 @@ uvicorn app.main:app --reload --port 8000
 |---|---|---|
 | `POST` | `/chat` | 已实现；一次性返回回复、会话编号和待确认操作 |
 | `POST` | `/chat/stream` | 已实现；SSE 流式输出文本，结束时返回会话编号和待确认操作 |
-| `GET` | `/health` | 已实现；返回服务状态和固定模拟身份 |
+| `GET` | `/health` | 返回服务状态和版本 |
+| `POST` | `/auth/login`、`/auth/logout` | 建立和撤销登录会话 |
+| `GET` | `/auth/me` | 返回当前登录账号 |
 | `POST` | `/confirm` | 已实现；显式批准或拒绝待确认操作，不调用模型 |
 | `POST` | `/recover` | 已实现；断线后查询上一次操作是否已执行，不调用模型、不写数据库 |
 | `GET` | `/orders` | 已实现；分页查询本人订单 |
@@ -786,9 +788,9 @@ npm run dev
 也可以 `npm run build` 后只启动后端，由 FastAPI 在 `http://127.0.0.1:8000/` 直接托管页面。
 页面清单、数据来源和当前限制见 [前端说明](docs/frontend.md)。
 
-HTTP 入口使用服务端固定模拟身份 `USER-001`，请求体不能传 `user_id`。
-`/chat` 保持一次性 JSON，`/chat/stream` 使用 SSE；`/confirm` 提供确定性的
-批准/拒绝动作，自然语言确认仍作为兼容路径保留。多用户登录和 HTTP 会话隔离尚未实现。
+HTTP 的对话与业务接口从 Cookie 对应的登录会话取得 `user_id`。运行初始化脚本可创建两个
+本地演示账号，并用它们分别查询本人的订单。见[两个账号查单](docs/frontend.md#两个账号查单)。
+`/chat` 使用 JSON，`/chat/stream` 使用 SSE，`/confirm` 提供确定性的批准和拒绝操作。
 请求、响应、流式事件和错误码见 [HTTP 对话接口](docs/http_api.md)。
 
 ### 9.6 运行测试
@@ -908,12 +910,17 @@ python scripts/demo.py
 
 ```python
 import httpx
-client = httpx.Client(base_url="http://localhost:8000")
-resp = client.post("/chat", json={"session_id": "sess-demo-1", "message": "我要取消 ORD-1002"})
-print(resp.json()["reply"], resp.json().get("pending_action"))
+
+with httpx.Client(base_url="http://127.0.0.1:8000") as client:
+    client.post("/auth/login", json={
+        "email": "demo@retailops.local", "password": "demo1234",
+    }).raise_for_status()
+    response = client.post("/chat", json={"message": "查询我的订单"})
+    response.raise_for_status()
+    print(response.json()["reply"])
 ```
 
-身份不由请求体携带：`session_id` 在服务端映射到具体用户，客户端无法通过字段伪造 `user_id`。
+同一个 HTTP 客户端会保留登录 Cookie。恢复对话时，服务端用登录身份及 `session_id`、`thread_id` 共同查找。
 
 ### 10.2 一轮需要确认的对话
 
@@ -942,12 +949,16 @@ print(resp.json()["reply"], resp.json().get("pending_action"))
 ### 10.3 确认接口
 
 ```bash
-curl -s http://localhost:8000/confirm \
+curl -s -c cookies.txt http://127.0.0.1:8000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"sess-demo-1","confirmation_id":"cfm_7f3a91c2e8b4","decision":"approve"}'
+  -d '{"email":"demo@retailops.local","password":"demo1234"}'
+
+curl -s -b cookies.txt http://127.0.0.1:8000/confirm \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"<session_id>","thread_id":"<thread_id>","confirmation_id":"<confirmation_id>","decision":"approve"}'
 ```
 
-`decision` 取值 `approve` 或 `reject`。重复提交同一 `confirmation_id` 会返回第一次的结果，不会重复执行。
+用同一账号在聊天里发起待确认操作后，把聊天返回的三个编号填入请求。重复提交同一编号会返回第一次的结果。
 
 ### 10.4 错误码
 

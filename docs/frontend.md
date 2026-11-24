@@ -1,14 +1,15 @@
 # 前端（React + Vite）
 
-前端位于 `frontend/`，按 `img/slate-blue/` 的低饱和蓝设计稿实现，覆盖登录、注册、售后对话、
+前端位于 `frontend/`，按 `img/slate-blue/` 的低饱和蓝设计稿实现，覆盖登录、售后对话、
 我的订单、订单详情与物流、退款申请、退款详情、售后政策，以及退款撤回确认对话框。
 
 ## 启动
 
-后端固定模拟身份为 `USER-001`，先启动接口，再启动前端：
+先初始化演示账号和订单，再启动后端和前端。
 
 ```bash
 # 终端 1：后端
+python -m scripts.init_db
 python -m uvicorn app.main:app --reload --port 8000
 
 # 终端 2：前端
@@ -39,7 +40,7 @@ npm run build
 
 | 路由 | 页面 | 数据来源 |
 |---|---|---|
-| `/login`、`/register` | 登录、注册 | 仅本地 `localStorage`，未接后端鉴权 |
+| `/login` | 登录 | `POST /auth/login` 校验账号和密码；工作台通过 `GET /auth/me` 检查会话 |
 | `/app` | 售后对话工作台 | `POST /chat/stream`、`POST /confirm`、`POST /recover`、`GET /orders/{id}` |
 | `/app/orders` | 我的订单 | `GET /orders` |
 | `/app/orders/:orderId` | 订单详情与物流 | `GET /orders/{orderId}` |
@@ -47,11 +48,21 @@ npm run build
 | `/app/refunds/:refundId` | 退款详情与撤回 | `GET /refunds/{refundId}`、`POST /refunds/{refundId}/withdraw` |
 | `/app/policies` | 售后政策 | `GET /policies` |
 
+## 两个账号查单
+
+| 邮箱 | 演示密码 | 本人订单示例 | 交叉查询 |
+|---|---|---|---|
+| `demo@retailops.local` | `demo1234` | `ORD-1001` | `ORD-1002` |
+| `demo2@retailops.local` | `demo5678` | `ORD-1002` | `ORD-1001` |
+
+依次登录，在售后助手里发送“查询我的订单”，再尝试查询表中另一账号的订单。本人订单应出现在列表里，交叉查询应返回“未找到该订单”。点击侧栏底部的“退出登录”切换账号。需同时登录时，用两个独立浏览器窗口，例如常规窗口和隐私窗口。
+
 ## 已接入的真实能力
 
 - **流式对话**：逐块读取 SSE `token` 事件追加到气泡，`done` 事件落定会话编号、待确认操作与历史保存状态。
 - **显式确认**：确认卡片调用 `POST /confirm`，批准或拒绝都走服务端既有校验；模型不再判断用户意图。
-- **断线恢复**：刷新页面后按保存的 `session_id`、`thread_id` 调用 `POST /recover`，若仍在等待确认则重建卡片。
+- **取消确认断线恢复**：网页在提交前保存 `confirmation_id`。刷新或重开对话时按同一编号查询，
+  恢复待确认卡、已取消结果卡，或显示「暂未查到结果」和「重新查询」。参见[模拟验收](recovery_query.md#网页模拟验收)。
 - **订单与物流**：订单列表分页、状态标签、物流时间轴以服务端最后一条事件为当前节点。
 - **退款资格**：订单详情读取 `refund_eligibility`，不符合条件时展示服务端给出的原因。
 - **撤回申请**：对话框确认后调用独立接口，服务端仍按“准备确认 → 写事务内复查申请状态与金额 → 执行”处理，
@@ -59,12 +70,31 @@ npm run build
 
 ## 模拟与未实现
 
-- **登录与注册没有后端账号系统**：提交后只把昵称、邮箱写入 `localStorage`，不校验密码，
-  不签发令牌，也不区分多用户。页面底部有明确标注。
-- **角色与权限**：所有请求都落在服务端固定的 `USER-001`，前端没有管理员或商户视角。
+- **账号**：本地提供预置账号。自助注册、管理员和商户角色暂未接入。
 - **业务数据为模拟数据**：订单、退款、物流均为本地 SQLite 模拟记录，页面保留“示例数据”标注。
-- **最近对话只保存在本机**：服务端聊天历史 10 分钟后过期；过期后再次发送会自动开始新对话并提示。
+- **最近对话**：浏览器只保留当前标签页和账号的记录，退出登录或切换账号时清空。服务端对话仍按登录身份恢复，默认可恢复 10 分钟。
 - **订单列表条数与设计稿不同**：列宽、状态标签、分页行为一致，但内容来自真实模拟数据。
+
+## 验收两笔订单交叉查询
+
+已有数据库先运行 `python -m scripts.init_db` 更新会话表。以下用未付款的 `ORD-3001` 做 A，用已发货的 `ORD-2002` 做 B。若 A 已取消，第 1 步换成另一笔仍可取消的本人订单。也可以用新建的临时演示库启动后端，再按本页的启动步骤运行前端。
+
+```powershell
+conda run --no-capture-output -n retail-agent python -c "from pathlib import Path; from tempfile import mkdtemp; import runpy, uvicorn; from app.storage import database; database.DB_PATH = Path(mkdtemp(prefix='retail-clarification-')) / 'demo.db'; runpy.run_module('scripts.init_db', run_name='__main__'); uvicorn.run('app.main:app', port=8000)"
+```
+
+登录演示账号后，在同一个售后对话中操作。
+
+1. 发送「取消 ORD-3001，不需要了」，等 A 的确认卡出现。
+2. 发送「查一下 ORD-2002 的物流」，再问「这笔还能取消吗？」。助手会列出 A 和 B，请你选一笔。
+3. 在同一标签页刷新，回到原对话，发送「刚查物流的那笔」。预期回答 B 已发货、不能取消，原确认卡仍指向 A。
+4. 发送「确认取消」。预期提示点击 A 的确认卡。点击卡片中的「确认取消订单」后，到订单列表核对 A 已取消、B 仍已发货。
+
+可运行这条流式回归，测试会另外创建临时数据库并核对资格查询实际收到的订单号、确认编号和操作日志。
+
+```powershell
+conda run -n retail-agent python -m pytest tests/test_streaming.py -k restores_order_clarification -v
+```
 
 ## 与设计稿的差异
 
@@ -87,7 +117,7 @@ frontend/
     ├── storage.js          # 本机会话与最近对话
     ├── styles.css          # 设计令牌与全部页面样式
     ├── components/         # 侧栏、图标、状态标签、分页、确认对话框、消息渲染
-    └── pages/              # 登录、注册、工作台、订单、退款、政策
+    └── pages/              # 登录、工作台、订单、退款、政策
 ```
 
 ## 验证记录

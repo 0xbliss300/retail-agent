@@ -1,6 +1,6 @@
-const PROFILE_KEY = "retailops.profile";
 const CONVERSATIONS_KEY = "retailops.conversations";
 const ACTIVE_KEY = "retailops.activeConversation";
+const ACCOUNT_KEY = "retailops.account";
 
 const listeners = new Set();
 
@@ -10,7 +10,7 @@ function notify() {
 
 function read(key, fallback) {
   try {
-    const raw = window.localStorage.getItem(key);
+    const raw = window.sessionStorage.getItem(key);
     return raw ? JSON.parse(raw) : fallback;
   } catch {
     return fallback;
@@ -19,19 +19,27 @@ function read(key, fallback) {
 
 function write(key, value) {
   try {
-    window.localStorage.setItem(key, JSON.stringify(value));
+    window.sessionStorage.setItem(key, JSON.stringify(value));
+    return true;
   } catch {
     // 浏览器禁用本地存储时保持内存状态即可。
+    return false;
   }
 }
 
-export function loadProfile() {
-  return read(PROFILE_KEY, { name: "小林", email: "" });
-}
-
-export function saveProfile(profile) {
-  write(PROFILE_KEY, profile);
-  notify();
+export function setConversationAccount(userId) {
+  try {
+    // 旧版历史没有账号归属，不能恢复到登录后的工作台。
+    for (const key of ["retailops.profile", CONVERSATIONS_KEY, ACTIVE_KEY]) {
+      window.localStorage.removeItem(key);
+    }
+    if (userId && read(ACCOUNT_KEY, null) === userId) return;
+    window.sessionStorage.removeItem(CONVERSATIONS_KEY);
+    window.sessionStorage.removeItem(ACTIVE_KEY);
+    write(ACCOUNT_KEY, userId);
+  } catch {
+    // 浏览器禁用存储时，页面仍可使用当前对话。
+  }
 }
 
 export function loadConversations() {
@@ -39,8 +47,9 @@ export function loadConversations() {
 }
 
 export function saveConversations(conversations) {
-  write(CONVERSATIONS_KEY, conversations.slice(0, 6));
-  notify();
+  const saved = write(CONVERSATIONS_KEY, conversations.slice(0, 6));
+  if (saved) notify();
+  return saved;
 }
 
 export function loadActiveConversationId() {

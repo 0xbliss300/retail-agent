@@ -439,7 +439,10 @@ p {
   gap: 10px;
   margin-top: auto;
   padding: 9px 8px;
+  border: 0;
   border-radius: var(--radius);
+  background: transparent;
+  text-align: left;
   cursor: pointer;
 }
 

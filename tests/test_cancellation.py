@@ -625,6 +625,11 @@ def test_chat_reject_or_question_does_not_cancel(cancel_db, monkeypatch, intent,
     order_id = cancel_db()
     context = prepare(order_id)
     install_intent(monkeypatch, intent, message)
+    if intent == "other":
+        monkeypatch.setattr(
+            "app.harness.runtime.request_model",
+            lambda *args: ChatCompletionMessage(role="assistant", content="确认后订单才会取消。"),
+        )
     run_agent(
         message,
         user_id=context["user_id"],

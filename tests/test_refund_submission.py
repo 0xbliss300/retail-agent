@@ -294,7 +294,7 @@ def install_intent_report(monkeypatch, arguments, *, duplicate=False):
         ("approve", "确认提交", "approve", "确认提交", "consumed", 1),
         ("reject", "算了不申请了", "reject", "不申请了", "rejected", 0),
         ("question", "确认后会怎样", "other", "确认后会怎样", "pending", 0),
-        ("bad_evidence", "先等等", "approve", "确认提交", "pending", 0),
+        ("bad_evidence", "确认提交", "approve", "先等等", "pending", 0),
         ("extra_fields", "确认提交", "approve", "确认提交", "pending", 0),
         ("malformed", "确认提交", "approve", "确认提交", "pending", 0),
         ("multiple", "确认提交", "approve", "确认提交", "pending", 0),
@@ -310,6 +310,11 @@ def test_chat_decision_controls_saved_confirmation(
         report["confirmation_id"] = context["confirmation_id"]
     arguments = "not json" if scenario == "malformed" else json.dumps(report)
     install_intent_report(monkeypatch, arguments, duplicate=scenario == "multiple")
+    if scenario == "question":
+        monkeypatch.setattr(
+            "app.harness.runtime.request_model",
+            lambda *args: ChatCompletionMessage(role="assistant", content="确认后会创建退款申请。"),
+        )
 
     messages = create_messages("离线测试")
     answer = run_agent(

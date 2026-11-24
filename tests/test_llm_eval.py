@@ -3,6 +3,7 @@
 import json
 import sys
 
+import pytest
 from openai.types.chat import ChatCompletionMessage
 
 from eval import run_eval
@@ -44,6 +45,20 @@ def fake_client() -> ScriptedClient:
             ),
         ]
     )
+
+
+def cancel_followup_client(reply="确认后将生成 **¥89.00** 的模拟退款流水。") -> ScriptedClient:
+    return ScriptedClient([
+        tool_call_message(
+            "find_orders_by_amount",
+            {"paid_amount_cents": 8900, "purpose": "cancel_order", "reason": "买重复了"},
+            "call_find_cancel",
+        ),
+        ChatCompletionMessage(role="assistant", content=reply),
+        tool_call_message(
+            "report_confirmation_intent", {"intent": "approve", "evidence": "确认取消"}, "call_intent",
+        ),
+    ])
 
 
 def order_query_client() -> ScriptedClient:
@@ -159,21 +174,71 @@ def refund_reject_client() -> ScriptedClient:
     )
 
 
-def vague_logistics_client() -> ScriptedClient:
-    """新增用例：模型先列订单，再用查到的订单号查物流。"""
-    return ScriptedClient(
-        [
-            tool_call_message("list_orders", {}, "call_list"),
-            tool_call_message(
-                "get_logistics",
-                {"order_id": "ORD-EVAL-16"},
-                "call_logistics",
-            ),
-            ChatCompletionMessage(
-                role="assistant", content="订单 ORD-EVAL-16 暂无物流记录。"
-            ),
-        ]
+def amount_lookup_call():
+    return tool_call_message("find_orders_by_amount", {"paid_amount_cents": 12900}, "call_find")
+
+
+def logistics_response(order_id: str) -> list[ChatCompletionMessage]:
+    details = {
+        "ORD-EVAL-16": "MOCK129016，已到达华东分拨中心。",
+        "ORD-EVAL-17": "MOCK129017，已到达滨海配送站。",
+    }
+    return [
+        tool_call_message("get_logistics", {"order_id": order_id}, "call_logistics"),
+        ChatCompletionMessage(role="assistant", content=details[order_id]),
+    ]
+
+
+def vague_logistics_client(order_id: str = "ORD-EVAL-16") -> ScriptedClient:
+    return ScriptedClient([amount_lookup_call(), *logistics_response(order_id)])
+
+
+@pytest.mark.parametrize(
+    "case_id, reply_text",
+    [
+        ("llm_vague_logistics_multiple", ["请选择", "ORD-EVAL-16", "ORD-EVAL-17"]),
+        ("llm_vague_logistics_no_match", ["没有找到", "129元"]),
+    ],
+)
+def test_amount_lookup_stops_without_guessing(tmp_path, monkeypatch, case_id, reply_text):
+    monkeypatch.setenv("LLM_MODEL", "fake-model")
+    lookup = amount_lookup_call()
+    guess = tool_call_message("get_logistics", {"order_id": "ORD-EVAL-16"}, "call_guess")
+    # 同一批里即使模型把猜测放在查找之前，也应先定位订单。
+    response = lookup.model_copy(update={"tool_calls": [*guess.tool_calls, *lookup.tool_calls]})
+    selected = "ORD-EVAL-17" if case_id == "llm_vague_logistics_multiple" else None
+    follow_up = logistics_response(selected) if selected else []
+
+    result = run_llm_case(
+        load_llm_case(case_id),
+        ScriptedClient([response, *follow_up]),
+        trace_path=tmp_path / "trace.jsonl",
     )
+
+    assert result["passed"], result
+    assert all(text in result["replies"][0] for text in reply_text)
+    assert [call["tool"] for call in result["tool_calls"] if call["turn"] == 1] == ["find_orders_by_amount"]
+    assert result["model_tool_requests"][0]["name"] == "get_logistics"
+    assert result["logistics_order_ids"] == ([selected] if selected else [])
+
+
+def test_amount_lookup_rejects_wrong_order_and_eval_detects_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "fake-model")
+    result = run_llm_case(
+        load_llm_case("llm_vague_logistics"),
+        ScriptedClient([
+            amount_lookup_call(),
+            tool_call_message("get_logistics", {"order_id": "ORD-1001"}, "call_wrong"),
+        ]),
+        trace_path=tmp_path / "trace.jsonl",
+    )
+
+    assert not result["passed"]
+    trace = (tmp_path / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+    calls = [event for event in map(json.loads, trace) if event["event"] == "tool.call"]
+    assert calls[-1]["error"] == "ORDER_SELECTION_MISMATCH"
+    checks = {check["name"]: check["ok"] for check in result["checks"]}
+    assert checks["trace.tool_call.2.get_logistics"] is False
 
 
 def test_run_llm_refund_case_with_fake_client(tmp_path, monkeypatch):
@@ -249,6 +314,28 @@ def test_run_llm_case_with_fake_client(tmp_path, monkeypatch):
         event["event"] == "confirmation.intent" and event["intent"] == "approve"
         for event in events
     )
+
+
+@pytest.mark.parametrize("reply,passed", [
+    ("确认后将生成 **¥89.00** 的模拟退款流水。", True),
+    ("确认后会退189元。", False),
+])
+def test_cancel_after_followup_checks_amount_and_database(tmp_path, monkeypatch, reply, passed):
+    monkeypatch.setenv("LLM_MODEL", "fake-model")
+    result = run_llm_case(
+        load_llm_case("llm_cancel_after_followup"),
+        cancel_followup_client(reply),
+        trace_path=tmp_path / "trace.jsonl",
+    )
+    assert result["passed"] is passed, result
+    assert result["followup_replies"] == [reply]
+    checks = {item["name"]: item["actual"] for item in result["checks"]}
+    assert checks["followup.turn.1.same_confirmation"] is True
+    assert checks["before_approval.refund_count"] == 0
+    assert checks["other_orders.ORD-EVAL-20.status"] == "paid"
+    assert checks["order.status"] == "canceled"
+    assert checks["refund.total_count"] == 1
+    assert checks["refund.amount_cents"] == 8900
 
 
 def test_cli_llm_uses_client_factory(tmp_path, monkeypatch, capsys):
@@ -382,6 +469,15 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
             refund_submit_client(),
             refund_reject_client(),
             vague_logistics_client(),
+            vague_logistics_client(),
+            vague_logistics_client(),
+            vague_logistics_client("ORD-EVAL-17"),
+            vague_logistics_client("ORD-EVAL-17"),
+            vague_logistics_client(),
+            ScriptedClient([amount_lookup_call()]),
+            ScriptedClient([amount_lookup_call()]),
+            ScriptedClient([amount_lookup_call()]),
+            cancel_followup_client(),
         ]
     )
     monkeypatch.setattr(
@@ -413,6 +509,15 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
         "llm_refund_shipped_order",
         "llm_refund_reject",
         "llm_vague_logistics",
+        "llm_vague_logistics_2",
+        "llm_vague_logistics_3",
+        "llm_vague_logistics_multiple",
+        "llm_vague_logistics_multiple_2",
+        "llm_vague_logistics_multiple_3",
+        "llm_vague_logistics_no_match",
+        "llm_vague_logistics_no_match_2",
+        "llm_vague_logistics_no_match_3",
+        "llm_cancel_after_followup",
     }
 
     exit_code = run_eval.main()
@@ -426,10 +531,10 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
         assert (tmp_path / case_id / "summary.json").exists()
 
     summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert summary["cases"] == 11
+    assert summary["cases"] == len(case_ids)
     assert summary["runs_per_case"] == 1
-    assert summary["total_runs"] == 11
-    assert summary["passed"] == 11
+    assert summary["total_runs"] == len(case_ids)
+    assert summary["passed"] == len(case_ids)
     assert summary["failed"] == 0
     assert summary["accuracy"] == 1.0
     assert summary["pass@1"] == 1.0
@@ -437,7 +542,7 @@ def test_cli_llm_all_runs_cases(tmp_path, monkeypatch, capsys):
     assert summary["policy_violation_rate"] == 0.0
     assert summary["p50_latency_ms"] >= 0
     assert summary["p95_latency_ms"] >= 0
-    assert len(summary["cases_detail"]) == 11
+    assert len(summary["cases_detail"]) == len(case_ids)
 
 
 def test_build_multi_case_summary_metrics():

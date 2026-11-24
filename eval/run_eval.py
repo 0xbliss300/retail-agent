@@ -195,12 +195,18 @@ def _run_llm(case_id: str, *, output_dir: Path, runs: int = 1) -> int:
     return 0 if summary["failed"] == 0 else 1
 
 
-def _run_llm_all(*, output_dir: Path, runs: int = 1) -> int:
+def _run_llm_all(*, output_dir: Path, runs: int = 1, case_prefix: str | None = None) -> int:
     try:
         cases = load_llm_cases()
     except ValueError as exc:
         print(f"ERROR: {exc}")
         return 2
+
+    if case_prefix is not None:
+        cases = [case for case in cases if case.case_id.startswith(case_prefix)]
+        if not cases:
+            print(f"ERROR: 没有匹配用例编号前缀 {case_prefix!r} 的用例")
+            return 2
 
     case_summaries = []
     for case in cases:
@@ -332,6 +338,7 @@ def main() -> int:
         action="store_true",
         help="运行 dev_cases.jsonl 中的全部脚本化用例",
     )
+    group.add_argument("--case-prefix", help="仅用真实模型运行匹配此编号前缀的用例")
     parser.add_argument(
         "--llm",
         action="store_true",
@@ -360,6 +367,8 @@ def main() -> int:
     if args.llm and (args.compare or args.baseline != "c"):
         print("ERROR: --compare 与 --baseline 只用于脚本化用例")
         return 2
+    if args.case_prefix is not None and (not args.llm or not args.case_prefix.strip()):
+        parser.error("--case-prefix 需要 --llm 和非空前缀")
 
     if args.runs < 1 or args.runs > 10:
         print("ERROR: --runs 必须在 1 到 10 之间")
@@ -369,9 +378,9 @@ def main() -> int:
         return 2
 
     if args.llm:
-        if args.all:
+        if args.all or args.case_prefix is not None:
             output_dir = args.output or (_default_output_dir() / "llm-all")
-            return _run_llm_all(output_dir=output_dir, runs=args.runs)
+            return _run_llm_all(output_dir=output_dir, runs=args.runs, case_prefix=args.case_prefix)
         case_id = args.case or "llm_cancel_paid_order"
         output_dir = args.output or _default_llm_output_dir(case_id)
         return _run_llm(case_id, output_dir=output_dir, runs=args.runs)

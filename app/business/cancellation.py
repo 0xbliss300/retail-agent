@@ -6,6 +6,7 @@ import sqlite3
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from app.business.labels import ORDER_STATUS_TEXT
 from app.business.policies import check_cancel_window
 from app.business.repository import (
     cancel_order_in_transaction,
@@ -52,7 +53,12 @@ def check_cancel_eligibility(
             delivered_at=order["delivered_at"],
         )
         if not window["window_open"]:
-            return _denied(window["code"], window["reason"])
+            status_text = ORDER_STATUS_TEXT.get(order["status"])
+            reason = (
+                f"订单{status_text}，不能取消。"
+                if window["code"] == "STATUS_NOT_SUPPORTED" and status_text else window["reason"]
+            )
+            return _denied(window["code"], reason)
         amount = order["paid_amount_cents"]
         if type(amount) is not int or amount < 0 or (order["status"] == "unpaid" and amount != 0):
             return _denied("PAYMENT_INVALID", "订单状态与实付金额不一致，不能执行取消。")

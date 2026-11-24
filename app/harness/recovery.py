@@ -3,12 +3,13 @@
 import json
 from datetime import UTC, datetime
 
-from app.business.repository import get_latest_confirmation_for_context
+from app.business.repository import get_confirmation_for_context, get_latest_confirmation_for_context
 from app.storage.database import get_connection
 
 READ_ONLY_TOOLS = frozenset({
     "list_orders",
     "list_refunds",
+    "find_orders_by_amount",
     "get_logistics",
     "get_order",
     "get_policy",
@@ -48,13 +49,16 @@ def describe_recovery(
     session_id: str,
     thread_id: str,
     now: datetime,
+    confirmation_id: str | None = None,
 ) -> dict:
-    """只读查询：该会话最近一次高风险操作现在处于什么状态。
+    """只读查询指定操作，省略编号时查询该会话最近一次操作。
 
     不改数据库。已过期的 pending 记录在下一次正常对话中才落地为 expired，
     这里只在返回结果时按过期判断，避免查询接口产生写副作用。
     """
     values = (user_id, session_id, thread_id)
+    if confirmation_id is not None:
+        values = (*values, confirmation_id)
     if not all(isinstance(value, str) and value.strip() for value in values):
         return {"ok": False, "error": "INVALID_ARGUMENTS"}
     if now.tzinfo is None or now.utcoffset() is None:
@@ -63,12 +67,11 @@ def describe_recovery(
 
     conn = get_connection()
     try:
-        record = get_latest_confirmation_for_context(
-            conn,
-            user_id=user_id,
-            session_id=session_id,
-            thread_id=thread_id,
-        )
+        context = {"user_id": user_id, "session_id": session_id, "thread_id": thread_id}
+        if confirmation_id is None:
+            record = get_latest_confirmation_for_context(conn, **context)
+        else:
+            record = get_confirmation_for_context(conn, **context, confirmation_id=confirmation_id)
     finally:
         conn.close()
 
